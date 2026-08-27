@@ -8,7 +8,7 @@ public class PreviewView extends View {
     private final FormulaEngine formulas=new FormulaEngine();
     private final EffectEngine effects=new EffectEngine();
     private final LruCache<String,Bitmap> cache;
-    private long startMs=0; private float baseTimeSec=0f; public boolean playing=false;
+    private long startMs=0; private float baseTimeSec=0f; private long lastDebugLogMs=0; public boolean playing=false;
 
     public PreviewView(Context c){
         super(c); setBackgroundColor(0xff020409);
@@ -32,8 +32,8 @@ public class PreviewView extends View {
             if(active.index<project.clips.size()-1 && active.clip.transition!=TransitionType.NONE && td>0 && active.localTime>active.clip.durationSec-td){
                 float mix=(active.localTime-(active.clip.durationSec-td))/td; drawClip(canvas, project.clips.get(active.index+1), 0f, mix);
             }
-            drawTexts(canvas,t);
-        }catch(Throwable e){ Log.e(TAG,"Preview render failed",e); drawCentered(canvas,"Preview image unavailable",0xffff8080); }
+            drawTexts(canvas,t); logPreview(t, active, true, null);
+        }catch(Throwable e){ logPreview(t, active, false, e); Log.e(TAG,"Preview render failed uri="+(active.clip==null?"none":active.clip.uri)+" clip="+(active.clip==null?"none":active.clip.index),e); drawCentered(canvas,"Preview image unavailable",0xffff8080); }
         p.setColor(0xffffffff); p.setTextSize(28); canvas.drawText(String.format(Locale.US,"Clip %02d  %.1fs   %s / %s",active.clip.index,active.clip.durationSec,fmt(t),fmt(project.totalDurationSec())),28,getHeight()-28,p);
         if(playing) postInvalidateDelayed(33);
     }
@@ -46,6 +46,12 @@ public class PreviewView extends View {
         KeyframeState st=formulas.stateAt(clip.formula,progress); RectF dst=project.fitMode==FitMode.FIT?fitInside(b.getWidth(),b.getHeight(),getWidth(),getHeight(),st):fill(b.getWidth(),b.getHeight(),getWidth(),getHeight(),st);
         if(project.fitMode==FitMode.FIT) drawFitBars(canvas,b,alpha);
         Paint paint=effects.paintFor(clip.effect,clip.effectIntensity); paint.setAlpha((int)(255*alpha*st.opacity)); canvas.save(); canvas.rotate(st.rotation,getWidth()/2f,getHeight()/2f); canvas.drawBitmap(b,null,dst,paint); canvas.restore(); effects.drawPost(canvas,getWidth(),getHeight(),clip.effect,clip.effectIntensity*alpha);
+    }
+
+    private void logPreview(float time, ClipAtTime active, boolean success, Throwable error){
+        long now=System.currentTimeMillis(); if(now-lastDebugLogMs<1000 && success) return; lastDebugLogMs=now;
+        String msg="currentTime="+fmt(time)+" activeClip="+(active.clip==null?"none":active.clip.index)+" clipUri="+(active.clip==null?"none":active.clip.uri)+" clipDuration="+(active.clip==null?0:active.clip.durationMs)+" formula="+(active.clip==null||active.clip.formula==null?"none":active.clip.formula.id)+" transition="+(active.clip==null?"none":active.clip.transition)+" bitmapLoaded="+success+" renderSuccess="+success+(error==null?"":" error="+error.getClass().getSimpleName());
+        Log.d(TAG,msg);
     }
 
     private Bitmap getBitmap(String uri) throws IOException{ String key=uri+"@"+getWidth()+"x"+getHeight(); Bitmap b=cache.get(key); if(b!=null&&!b.isRecycled()) return b; b=decode(Uri.parse(uri),Math.max(1,getWidth()),Math.max(1,getHeight())); if(b!=null) cache.put(key,b); return b; }
