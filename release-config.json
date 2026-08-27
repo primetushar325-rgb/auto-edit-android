@@ -1,0 +1,10 @@
+{
+  "_comment": "Release automation config. minimumSupportedVersionCode: if omitted or 0, defaults to the new versionCode (fully mandatory). Set it LOWER than the new versionCode to allow older versions to keep working. releaseNotes: bullets shown on the update screen. You only edit THIS file and the versionCode/versionName in app/build.gradle.kts — the workflow generates version.json and the GitHub Release automatically.",
+  "minimumSupportedVersionCode": 0,
+  "releaseNotes": [
+    "Improved export performance",
+    "Custom formulas and keyframes",
+    "Video Frame Extractor",
+    "Bug fixes"
+  ]
+}

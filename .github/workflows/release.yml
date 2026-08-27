@@ -1,0 +1,154 @@
+name: Release APK + version.json
+
+# Publish a GitHub Release with AutoEdit-latest.apk (+ versioned APK + version.json)
+# whenever a v* tag is pushed. Manual runs (workflow_dispatch) build/test and
+# upload CI artifacts without creating a release.
+#
+# Release policy: the app compares its own versionCode against
+# minimumSupportedVersionCode from version.json. To force EVERYONE to update,
+# keep minimumSupportedVersionCode equal to the new versionCode (default).
+# To allow older versions to keep working, set it lower in release-config.json.
+#
+# No credentials are ever stored in this workflow: signing uses optional
+# GitHub secrets (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+# ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD). Without them the APK is unsigned
+# (installable only for testing). The workflow fails if build/tests fail.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Install Android packages
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Configure signing (optional secrets)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > /tmp/release-keystore.jks
+            echo "SIGNING_KEYSTORE_FILE=/tmp/release-keystore.jks" >> "$GITHUB_ENV"
+            echo "SIGNING_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_PASSWORD=${KEY_PASSWORD:-$KEYSTORE_PASSWORD}" >> "$GITHUB_ENV"
+            echo "Signing configured from secrets."
+          else
+            echo "NOTE: no signing secrets set — building an UNSIGNED release APK (testing only)."
+          fi
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Unit tests + release build
+        run: ./gradlew clean testDebugUnitTest assembleRelease --stacktrace
+
+      - name: Verify APK exists
+        run: |
+          test -f app/build/outputs/apk/release/app-release.apk || (echo "APK missing — aborting." && exit 1)
+          ls -la app/build/outputs/apk/release/
+
+      - name: Read version from project (no hardcoding)
+        run: |
+          python3 - <<'EOF'
+          import re
+          g = open('app/build.gradle.kts').read()
+          vc = re.search(r'versionCode\s*=\s*(\d+)', g).group(1)
+          vn = re.search(r'versionName\s*=\s*"([^"]+)"', g).group(1)
+          print(f"versionCode={vc} versionName={vn}")
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write(f"VERSION_CODE={vc}\nVERSION_NAME={vn}\n")
+          EOF
+
+      - name: Generate version.json
+        run: |
+          python3 - <<'EOF'
+          import json, os, re
+          vc = int(os.environ['VERSION_CODE']); vn = os.environ['VERSION_NAME']
+          min_code = vc
+          notes = ["Improved export performance", "Formula improvements", "Bug fixes"]
+          try:
+              cfg = json.load(open('release-config.json'))
+              if cfg.get('minimumSupportedVersionCode', 0) > 0:
+                  min_code = int(cfg['minimumSupportedVersionCode'])
+              if cfg.get('releaseNotes'):
+                  notes = [str(n) for n in cfg['releaseNotes']]
+          except Exception:
+              pass
+          data = {
+              "latestVersionCode": vc,
+              "latestVersionName": vn,
+              "minimumSupportedVersionCode": min_code,
+              "downloadUrl": "https://github.com/primetushar325-rgb/auto-edit-android/releases/latest/download/AutoEdit-latest.apk",
+              "releaseNotes": notes,
+          }
+          json.dump(data, open('version.json', 'w'), indent=2)
+          print("version.json:", json.dumps(data))
+          EOF
+
+      - name: Prepare release assets
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk AutoEdit-latest.apk
+          cp app/build/outputs/apk/release/app-release.apk AutoEdit-v${VERSION_NAME}.apk
+
+      - name: Create GitHub Release + upload APKs + version.json (tag pushes)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: AutoEdit v${{ env.VERSION_NAME }}
+          tag_name: ${{ github.ref_name }}
+          files: |
+            AutoEdit-latest.apk
+            AutoEdit-v${{ env.VERSION_NAME }}.apk
+            version.json
+
+      - name: Publish updated version.json to main (tag pushes)
+        if: github.ref_type == 'tag'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add version.json
+          if git diff --cached --quiet; then
+            echo "version.json unchanged"
+          else
+            git commit -m "chore: update version.json to v${VERSION_NAME} (code ${VERSION_CODE})"
+            git push origin HEAD:main
+          fi
+
+      - name: Upload CI artifacts (manual runs only)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoEdit-unsigned-v${{ env.VERSION_NAME }}
+          path: |
+            AutoEdit-latest.apk
+            AutoEdit-v${{ env.VERSION_NAME }}.apk
+            version.json

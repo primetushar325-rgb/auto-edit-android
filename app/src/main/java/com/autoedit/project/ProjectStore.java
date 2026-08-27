@@ -29,7 +29,7 @@ public class ProjectStore {
             p.audioUri=o.optString("audio",null); if("null".equals(p.audioUri) || "".equals(p.audioUri)) p.audioUri=null;
             JSONArray arr=o.optJSONArray("clips");
             if(arr!=null) for(int i=0;i<arr.length();i++){
-                JSONObject c=arr.getJSONObject(i); TimelineClip clip=new TimelineClip(c.getString("uri"),c.optInt("index",i+1),formulas.byId(c.optString("formula","17")));
+                JSONObject c=arr.getJSONObject(i); TimelineClip clip=new TimelineClip(c.getString("uri"),c.optInt("index",i+1),resolveFormula(c.optString("formula","17")));
                 if(c.has("durationMs")) clip.setDurationMs(c.optLong("durationMs",5000)); else clip.setDurationSeconds((float)c.optDouble("duration",5));
                 clip.transition=TransitionType.valueOf(c.optString("transition",TransitionType.CROSS_DISSOLVE.name()));
                 clip.transitionDurationSec=(float)c.optDouble("transitionDuration",.5); clip.effect=EffectType.valueOf(c.optString("effect",EffectType.NONE.name())); clip.effectIntensity=(float)c.optDouble("effectIntensity",.6); p.clips.add(clip);
@@ -39,4 +39,17 @@ public class ProjectStore {
     }
 
     public EditProject load(){ return fromJsonString(ctx.getSharedPreferences(PREF,0).getString(KEY,null)); }
+
+    /** Resolves a saved formula id. Custom formulas (ids starting with "C")
+     *  load from CustomFormulaStore so projects keep rendering them across
+     *  restarts; built-in ids fall back to FormulaEngine (old saves intact).
+     *  Missing/deleted custom ids safely fall back to the default motion. */
+    private Formula resolveFormula(String id){
+        if(id!=null && id.startsWith("C")){
+            Formula cf = CustomFormulaStore.resolve(ctx, id, formulas);
+            if(cf!=null && cf.id!=null && cf.id.equals(id)) return cf;
+            return formulas.byId("17");
+        }
+        return formulas.byId(id);
+    }
 }

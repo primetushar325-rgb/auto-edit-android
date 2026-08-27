@@ -17,16 +17,24 @@ import android.util.Log;
 import android.view.*;
 import android.widget.*;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.*;
+
+import org.json.JSONObject;
 
 import com.autoedit.model.*;
 import com.autoedit.engine.*;
 import com.autoedit.project.*;
 import com.autoedit.export.*;
 import com.autoedit.ui.*;
+import com.autoedit.formula.CustomFormulaActivity;
+import com.autoedit.frames.FrameExtractorActivity;
+import com.autoedit.update.UpdateActivity;
+import com.autoedit.update.UpdateChecker;
+import com.autoedit.update.VersionConfig;
 
 public class MainActivity extends Activity {
-    private static final int PICK_IMAGES = 10, PICK_AUDIO = 11;
+    private static final int PICK_IMAGES = 10, PICK_AUDIO = 11, REQ_CUSTOM_FORMULA = 12;
     private static final String TAG = "AutoEditMain";
 
     private EditProject project;
@@ -106,6 +114,33 @@ public class MainActivity extends Activity {
         }
         if (exportRunning) showExportProgressScreen(); else showHome();
         handler.postDelayed(autosave, 30000);
+        runUpdateCheck();
+    }
+
+    // ------------------------------------------------- update system (mandatory)
+
+    private static long lastUpdateCheckMs = 0;
+
+    /** Checks remote version.json. Offline/cached rules live in UpdateChecker;
+     *  only a version BELOW minimumSupportedVersionCode opens the blocking
+     *  mandatory update screen — everything else continues normally. */
+    private void runUpdateCheck() {
+        long now = System.currentTimeMillis();
+        if (now - lastUpdateCheckMs < 10 * 60 * 1000L) return; // throttle: 10 min
+        lastUpdateCheckMs = now;
+        UpdateChecker.checkAsync(this, (cfg, fromCache) -> {
+            if (cfg == null) return; // never reached + no cache → open normally
+            int local = UpdateChecker.localVersionCode(this);
+            if (local < cfg.minimumSupportedVersionCode) {
+                Intent i = new Intent(this, UpdateActivity.class);
+                i.putExtra(UpdateActivity.EXTRA_LATEST_CODE, cfg.latestVersionCode);
+                i.putExtra(UpdateActivity.EXTRA_LATEST_NAME, cfg.latestVersionName);
+                i.putExtra(UpdateActivity.EXTRA_MIN_CODE, cfg.minimumSupportedVersionCode);
+                i.putExtra(UpdateActivity.EXTRA_DOWNLOAD_URL, cfg.downloadUrl);
+                if (!cfg.releaseNotes.isEmpty()) i.putStringArrayListExtra(UpdateActivity.EXTRA_NOTES, new ArrayList<>(cfg.releaseNotes));
+                startActivity(i);
+            }
+        });
     }
 
     @Override protected void onSaveInstanceState(Bundle b) {
@@ -119,6 +154,7 @@ public class MainActivity extends Activity {
         super.onResume();
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(exportReceiver, new IntentFilter(ExportService.ACTION_PROGRESS), RECEIVER_NOT_EXPORTED);
         else registerReceiver(exportReceiver, new IntentFilter(ExportService.ACTION_PROGRESS));
+        runUpdateCheck(); // re-check when the app comes back (network may be available now)
     }
 
     @Override protected void onPause() {
@@ -142,6 +178,7 @@ public class MainActivity extends Activity {
         }
         if ("editor".equals(screen)) showHome();
         else if ("create".equals(screen) || "export".equals(screen) || "settings".equals(screen)) showEditor();
+        else if ("prompts".equals(screen)) showHome();
         else super.onBackPressed();
     }
 
@@ -190,7 +227,7 @@ public class MainActivity extends Activity {
         LinearLayout header = row();
         header.setGravity(Gravity.CENTER_VERTICAL);
         ImageView logo = new ImageView(this);
-        logo.setImageResource(R.drawable.logo_autoedit); // v1.0.7: user-provided AutoEdit logo
+        logo.setImageResource(R.drawable.logo_autoedit_alpha); // transparent logo (background keyed out)
         header.addView(logo, new LinearLayout.LayoutParams(dp(58), dp(58)));
         LinearLayout titles = col();
         titles.addView(label("Auto-Edit", 30, AeDesign.TEXT, Typeface.BOLD));
@@ -209,6 +246,98 @@ public class MainActivity extends Activity {
 
         root.addView(label("Recent Projects", 20, AeDesign.TEXT, Typeface.BOLD));
         if (project.clips.isEmpty()) emptyState(); else projectCard(project);
+
+        // ---- Prompt Library entry (infrastructure per master task Part 13) ----
+        LinearLayout promptCard = AeDesign.card(this);
+        LinearLayout prow = row();
+        prow.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView picon = new ImageView(this);
+        picon.setImageResource(R.drawable.ic_formula);
+        picon.setColorFilter(AeDesign.ACCENT);
+        picon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        picon.setPadding(dp(8), dp(8), dp(8), dp(8));
+        picon.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(16), AeDesign.STROKE, 1));
+        prow.addView(picon, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        LinearLayout pinfo = col();
+        pinfo.setPadding(dp(12), 0, 0, 0);
+        pinfo.addView(label("Prompts", 17, AeDesign.TEXT, Typeface.BOLD));
+        pinfo.addView(label("Prompt name • description • preview • formula", 12, AeDesign.MUTED, Typeface.NORMAL));
+        prow.addView(pinfo, new LinearLayout.LayoutParams(0, -2, 1));
+        Button popen = AeDesign.button(this, "OPEN", false);
+        AeDesign.press(popen, () -> showPrompts());
+        prow.addView(popen, new LinearLayout.LayoutParams(-2, dp(44)));
+        promptCard.addView(prow);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(-1, -2);
+        plp.setMargins(0, dp(14), 0, 0);
+        root.addView(promptCard, plp);
+
+        // ---- Video Frame Extractor entry ----
+        LinearLayout frameCard = AeDesign.card(this);
+        LinearLayout frow = row();
+        frow.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView ficon = new ImageView(this);
+        ficon.setImageResource(R.drawable.ic_images);
+        ficon.setColorFilter(AeDesign.ACCENT);
+        ficon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        ficon.setPadding(dp(8), dp(8), dp(8), dp(8));
+        ficon.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(16), AeDesign.STROKE, 1));
+        frow.addView(ficon, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        LinearLayout finfo = col();
+        finfo.setPadding(dp(12), 0, 0, 0);
+        finfo.addView(label("🎬 Video Frame Extractor", 17, AeDesign.TEXT, Typeface.BOLD));
+        finfo.addView(label("Extract frames from your video automatically — 100% offline", 12, AeDesign.MUTED, Typeface.NORMAL));
+        frow.addView(finfo, new LinearLayout.LayoutParams(0, -2, 1));
+        Button fopen = AeDesign.button(this, "OPEN", true);
+        AeDesign.press(fopen, () -> {
+            try {
+                startActivity(new Intent(this, FrameExtractorActivity.class));
+            } catch (Exception e) {
+                Log.e(TAG, "Frame extractor failed", e);
+                toast("Could not open Frame Extractor");
+            }
+        });
+        frow.addView(fopen, new LinearLayout.LayoutParams(-2, dp(44)));
+        frameCard.addView(frow);
+        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(-1, -2);
+        flp.setMargins(0, dp(10), 0, 0);
+        root.addView(frameCard, flp);
+    }
+
+    /** Prompt Library screen. Schema + storage are live; the library starts
+     *  empty (no fake prompts) — entries plug in later without rework. */
+    private void showPrompts() {
+        screen = "prompts";
+        base();
+        addHeader("Prompt Library", "Saved prompts with name, description, preview and formula", () -> showHome());
+        List<PromptItem> prompts = PromptStore.all(this);
+        if (prompts.isEmpty()) {
+            LinearLayout c = AeDesign.card(this);
+            c.setGravity(Gravity.CENTER);
+            TextView t = label("No prompts yet", 20, AeDesign.TEXT, Typeface.BOLD);
+            t.setGravity(Gravity.CENTER);
+            c.addView(t);
+            TextView s = label("Prompts can bundle a name, description, preview image and an associated formula. The library is ready — entries will be added in an upcoming update.", 13, AeDesign.MUTED, Typeface.NORMAL);
+            s.setGravity(Gravity.CENTER);
+            c.addView(s);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, 0, 1);
+            lp.setMargins(0, dp(20), 0, 0);
+            root.addView(c, lp);
+            return;
+        }
+        ScrollView sv = new ScrollView(this);
+        LinearLayout col = col();
+        for (PromptItem p : prompts) {
+            LinearLayout card = AeDesign.card(this);
+            card.addView(label(p.name, 16, AeDesign.TEXT, Typeface.BOLD));
+            if (p.description != null && !p.description.isEmpty()) card.addView(label(p.description, 13, AeDesign.MUTED, Typeface.NORMAL));
+            if (p.formulaId != null) card.addView(label("Associated formula: " + p.formulaId, 12, AeDesign.ACCENT, Typeface.NORMAL));
+            if (p.action != null) card.addView(label("Action: " + p.action, 12, AeDesign.MUTED, Typeface.NORMAL));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+            lp.setMargins(0, dp(8), 0, dp(4));
+            col.addView(card, lp);
+        }
+        sv.addView(col);
+        root.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
     }
 
     private void emptyState() {
@@ -689,6 +818,109 @@ public class MainActivity extends Activity {
         hsv.addView(cards);
         panelHost.addView(hsv, new LinearLayout.LayoutParams(-1, -2));
         panelHost.addView(label("Card previews loop the real sequence. Applying never touches the original media — only the clip's formula state (undo/redo safe).", 12, AeDesign.MUTED, Typeface.NORMAL));
+
+        // ---- custom formulas (user-created, stored in CustomFormulaStore) ----
+        panelHost.addView(label("Custom Formulas", 15, AeDesign.TEXT, Typeface.BOLD));
+        HorizontalScrollView chsv = new HorizontalScrollView(this);
+        chsv.setHorizontalScrollBarEnabled(false);
+        LinearLayout ccards = row();
+        addNewFormulaCard(ccards);
+        for (JSONObject o : CustomFormulaStore.all(this)) addCustomFormulaCard(ccards, o);
+        chsv.addView(ccards);
+        panelHost.addView(chsv, new LinearLayout.LayoutParams(-1, -2));
+        panelHost.addView(label("Custom formulas are rendered by the same FormulaEngine as built-ins — preview and export both use the saved keyframes.", 12, AeDesign.MUTED, Typeface.NORMAL));
+    }
+
+    /** "+ New" card → opens the Custom Formula creator. */
+    private void addNewFormulaCard(LinearLayout parent) {
+        LinearLayout card = col();
+        card.setPadding(dp(8), dp(8), dp(8), dp(8));
+        card.setBackground(AeDesign.bg(AeDesign.SURFACE, dp(18), AeDesign.STROKE, 1));
+        ImageView plus = new ImageView(this);
+        plus.setImageResource(R.drawable.ic_add);
+        plus.setColorFilter(AeDesign.ACCENT);
+        plus.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        plus.setPadding(dp(30), dp(30), dp(30), dp(30));
+        card.addView(plus, new LinearLayout.LayoutParams(dp(112), dp(112)));
+        TextView name = label("＋ New", 12, AeDesign.TEXT, Typeface.BOLD);
+        name.setGravity(Gravity.CENTER);
+        card.addView(name, new LinearLayout.LayoutParams(-1, -2));
+        TextView cat = label("Create custom formula", 10, AeDesign.MUTED, Typeface.NORMAL);
+        cat.setGravity(Gravity.CENTER);
+        card.addView(cat, new LinearLayout.LayoutParams(-1, -2));
+        AeDesign.press(card, () -> openCustomFormulaLibrary());
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMargins(dp(6), dp(4), dp(6), dp(4));
+        parent.addView(card, lp);
+    }
+
+    /** One custom formula card: preview thumbnail + CUSTOM badge; tap applies. */
+    private void addCustomFormulaCard(LinearLayout parent, JSONObject o) {
+        String id = o.optString("id");
+        String nameStr = o.optString("name", "Custom");
+        int kfCount = o.optJSONArray("keyframes") != null ? o.optJSONArray("keyframes").length() : 0;
+        LinearLayout card = col();
+        card.setPadding(dp(8), dp(8), dp(8), dp(8));
+        ImageView thumb = new ImageView(this);
+        thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        thumb.setImageBitmap(customThumb(o));
+        thumb.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(14), AeDesign.STROKE, 1));
+        card.addView(thumb, new LinearLayout.LayoutParams(dp(112), dp(112)));
+
+        LinearLayout nameRow = row();
+        nameRow.setGravity(Gravity.CENTER);
+        nameRow.addView(label(nameStr, 11, AeDesign.TEXT, Typeface.BOLD));
+        TextView badge = label("CUSTOM", 8, AeDesign.ACCENT, Typeface.BOLD);
+        badge.setGravity(Gravity.CENTER);
+        badge.setBackground(AeDesign.bg(0xff12395c, dp(8), AeDesign.ACCENT, 1));
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-2, -2);
+        blp.leftMargin = dp(4);
+        nameRow.addView(badge, blp);
+        card.addView(nameRow, new LinearLayout.LayoutParams(-1, -2));
+        TextView cat = label((o.optString("category", "Custom")) + " • " + Math.round(o.optDouble("totalDuration", 8)) + "s • " + (kfCount - 1) + " steps", 10, AeDesign.MUTED, Typeface.NORMAL);
+        cat.setGravity(Gravity.CENTER);
+        card.addView(cat, new LinearLayout.LayoutParams(-1, -2));
+
+        boolean applied;
+        if (selected >= 0 && selected < project.clips.size()) applied = sameFormulaId(project.clips.get(selected).formula, id);
+        else if (!project.clips.isEmpty()) {
+            applied = true;
+            for (TimelineClip c : project.clips) if (!sameFormulaId(c.formula, id)) { applied = false; break; }
+        } else applied = false;
+        card.setBackground(AeDesign.bg(AeDesign.SURFACE, dp(18), applied ? AeDesign.ACCENT : AeDesign.STROKE, applied ? 2 : 1));
+        AeDesign.press(card, () -> {
+            applyFormula(id);
+            formulaBatchPanel();
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMargins(dp(6), dp(4), dp(6), dp(4));
+        parent.addView(card, lp);
+    }
+
+    private Bitmap customThumb(JSONObject o) {
+        try {
+            String uri = CustomFormulaStore.previewUri(o);
+            if (uri == null) return null;
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = 8;
+            try (InputStream in = getContentResolver().openInputStream(Uri.parse(uri))) {
+                return BitmapFactory.decodeStream(in, null, opts);
+            }
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Opens the Custom Formula library/creator; applying comes back through
+     *  onActivityResult so it runs through the normal undo/redo-safe path. */
+    private void openCustomFormulaLibrary() {
+        try {
+            Intent i = new Intent(this, CustomFormulaActivity.class);
+            startActivityForResult(i, REQ_CUSTOM_FORMULA);
+        } catch (Exception e) {
+            Log.e(TAG, "Custom formula screen failed", e);
+            toast("Could not open Custom Formulas");
+        }
     }
 
     private void addFormulaCard(LinearLayout parent, String id) {
@@ -851,13 +1083,24 @@ public class MainActivity extends Activity {
         toast("Text added: " + s);
     }
 
+    /** Resolves a formula id → real Formula: custom formulas (ids starting with
+     *  "C") load from CustomFormulaStore, everything else from FormulaEngine. */
+    private Formula formulaById(String id) {
+        if (id != null && id.startsWith("C")) {
+            Formula cf = CustomFormulaStore.resolve(this, id, formulas);
+            if (cf != null && cf.id != null && cf.id.equals(id)) return cf;
+        }
+        return formulas.byId(id);
+    }
+
     private void applyFormula(String id) {
         pushUndo();
-        Formula f = formulas.byId(id);
+        Formula f = formulaById(id);
         if (selected >= 0) project.clips.get(selected).formula = f;
         else for (int i = 0; i < project.clips.size(); i++) project.clips.get(i).formula = f;
         saveProject(true);
         buildTimeline(false);
+        if (preview != null) preview.invalidate();
         toast("Motion: " + f.name + " → " + (selected >= 0 ? "Clip " + project.clips.get(selected).index : "ALL " + project.clips.size() + " clips"));
     }
 
@@ -1062,6 +1305,15 @@ public class MainActivity extends Activity {
     @Override protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
         if (res != RESULT_OK || data == null) return;
+        if (req == REQ_CUSTOM_FORMULA && data.hasExtra(CustomFormulaActivity.EXTRA_FORMULA_ID)) {
+            String fid = data.getStringExtra(CustomFormulaActivity.EXTRA_FORMULA_ID);
+            if (fid != null) {
+                applyFormula(fid); // undo/redo-safe state operation (pushUndo inside)
+                if ("editor".equals(screen)) showEditor();
+                else if ("settings".equals(screen)) showSettings();
+            }
+            return;
+        }
         if (req == PICK_IMAGES) {
             ArrayList<Uri> uris = new ArrayList<>();
             if (data.getClipData() != null) {
@@ -1507,6 +1759,17 @@ public class MainActivity extends Activity {
         screen = "settings";
         base();
         addHeader("Settings", "Editor • Playback • Export • Storage • About", () -> { if ("home".equals(from)) showHome(); else showEditor(); });
+        LinearLayout cf = AeDesign.card(this);
+        cf.addView(label("Custom Formula", 16, AeDesign.TEXT, Typeface.BOLD));
+        cf.addView(label("Create your own motion formulas with keyframes. Saved formulas appear in the editor Formula panel with a CUSTOM badge.", 12, AeDesign.MUTED, Typeface.NORMAL));
+        Button openCf = AeDesign.button(this, "Open Custom Formulas", true);
+        AeDesign.press(openCf, () -> openCustomFormulaLibrary());
+        LinearLayout.LayoutParams cfbtn = new LinearLayout.LayoutParams(-1, dp(48));
+        cfbtn.topMargin = dp(8);
+        cf.addView(openCf, cfbtn);
+        LinearLayout.LayoutParams cflp = new LinearLayout.LayoutParams(-1, -2);
+        cflp.setMargins(0, dp(8), 0, dp(4));
+        root.addView(cf, cflp);
         showPanelIntoRoot("Editor", new String[]{"Default aspect ratio: " + draftPreset.label, "Default FPS: " + draftFps, "Auto-save: ON (every 30s)", "Undo / Redo: 40 steps"});
         showPanelIntoRoot("Playback", new String[]{"Preview quality: Optimized (sampled decode + LRU)", "Preview FPS: " + project.fps, "Audio in preview: ON (plays with Play)"});
         showPanelIntoRoot("Export", new String[]{"Resolution: " + project.width + "×" + project.height, "Pipeline: MediaCodec H.264 → MediaMuxer MP4 (protected)", "Audio export: COMING SOON (video-only)"});

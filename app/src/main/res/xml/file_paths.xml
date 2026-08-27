@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider paths shared by:
+  - Video Frame Extractor: ZIP share/open (cache-path)
+  - Mandatory update system: downloaded APK install (files-path, cache-path)
+-->
+<paths>
+    <cache-path name="cache" path="." />
+    <files-path name="files" path="." />
+    <external-path name="external" path="." />
+</paths>

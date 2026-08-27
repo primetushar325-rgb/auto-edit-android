@@ -13,9 +13,12 @@ import com.autoedit.R;
  * streaks, radial bloom, and the user-provided AutoEdit logo breathing
  * (scale 1.00 → 1.03, glow LOW → HIGH → LOW) at the center — the logo never spins.
  *
+ * Logo: drawn from the transparent logo_autoedit_alpha.png, bounded small
+ * (≈0.8 × ring radius, capped at 120dp) so it always sits INSIDE the ring.
+ *
  * Everything is native custom drawing (time-based), GPU-friendly:
  * - smoke is a small number of pre-rendered gradient sprites, repositioned per frame
- * - the logo is decoded + soft-masked ONCE, then only scaled/drawn per frame
+ * - the logo is decoded ONCE, then only scaled/drawn per frame
  * - no bitmaps are allocated per frame, no video is played
  * Animation stops when `running` is false or the view is not shown; when
  * `done` is set the view freezes on a calm static frame (full ring).
@@ -129,14 +132,14 @@ public class ExportRingView extends View {
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         if (logoBmp == null) {
-            // The user-provided AutoEdit logo (exact identity, unmodified source).
-            // Rendering-layer treatment only: the square PNG corners are soft-masked
-            // so they dissolve into the dark UI, and it is downscaled once.
-            Bitmap src = BitmapFactory.decodeResource(getResources(), R.drawable.logo_autoedit);
-            Bitmap ds = downsample(src, 640);
-            logoBmp = softMask(ds);
-            if (ds != src) ds.recycle();
-            src.recycle();
+            // BUGFIX (v1.0.7+): use the transparent logo asset (logo_autoedit_alpha.png,
+            // generated from the supplied logo with its baked-in background keyed out —
+            // exact shape, proportions and colors preserved). The previous runtime
+            // "soft mask" painted an opaque white square (Canvas.drawColor ignores the
+            // shader), which is why a huge white square covered the export screen.
+            Bitmap src = BitmapFactory.decodeResource(getResources(), R.drawable.logo_autoedit_alpha);
+            logoBmp = downsample(src, 640);
+            if (logoBmp != src) src.recycle();
         }
         if (smokeSprite == null) smokeSprite = smokeSprite(256);
         tick();
@@ -147,23 +150,6 @@ public class ExportRingView extends View {
         float s = Math.min(1f, max / (float) Math.max(w, h));
         if (s >= 1f) return src;
         return Bitmap.createScaledBitmap(src, Math.max(2, (int) (w * s)), Math.max(2, (int) (h * s)), true);
-    }
-
-    /** Alpha-fade the square edges radially so the logo blends into the background
-     *  (rendering-layer mask only — the source asset is untouched). */
-    private static Bitmap softMask(Bitmap src) {
-        if (src == null) return null;
-        Bitmap m = src.copy(Bitmap.Config.ARGB_8888, true);
-        Canvas c = new Canvas(m);
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        int s = m.getWidth();
-        RadialGradient g = new RadialGradient(s / 2f, s / 2f, s / 2f,
-                new int[]{0xffffffff, 0xffffffff, 0x00ffffff},
-                new float[]{0f, 0.80f, 1f}, Shader.TileMode.CLAMP);
-        p.setShader(g);
-        p.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
-        c.drawColor(0xffffffff);
-        return m;
     }
 
     private static Bitmap smokeSprite(int size) {
@@ -250,9 +236,12 @@ public class ExportRingView extends View {
         }
 
         // ---- center logo: breathing scale 1.00→1.03 + glow LOW→HIGH→LOW, no spin ----
+        // BUGFIX: logo must stay SMALL inside the ring — it no longer fills the
+        // entire ring diameter (was R*1.0). Bounded so the breathing peak keeps it
+        // fully inside the ring and it never overlaps the text below.
         float breath = done ? 0.5f : 0.5f - 0.5f * (float) Math.cos(2 * Math.PI * t / 3.2f);
-        float ls = R * 1.0f * (1.00f + 0.03f * breath);
-        float lgR = ls * 0.78f;
+        float ls = Math.min(R * 0.8f, dp(120f)) * (1.00f + 0.03f * breath);
+        float lgR = ls * 0.60f;
         RadialGradient lg = new RadialGradient(cx, cy, lgR,
                 new int[]{0x6649A8FF, 0x0049A8FF}, new float[]{0f, 1f}, Shader.TileMode.CLAMP);
         glow.setShader(lg);
