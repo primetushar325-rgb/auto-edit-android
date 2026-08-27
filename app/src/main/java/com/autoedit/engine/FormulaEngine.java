@@ -7,6 +7,7 @@ public class FormulaEngine {
     private final ArrayList<Formula> formulas = new ArrayList<>();
     public FormulaEngine(){ build(); }
     private void build(){
+        add("00","None","Static",0,0,1.0f,0,0,1.0f);
         add("01","Top → Bottom","Vertical",0,-.10f,1.0f,0,.10f,1.08f);
         add("02","Right → Left","Horizontal",.12f,0,1.05f,-.12f,0,1.05f);
         add("03","Top → Bottom Zoom","Vertical Zoom",0,-.12f,1.0f,0,.12f,1.12f);
