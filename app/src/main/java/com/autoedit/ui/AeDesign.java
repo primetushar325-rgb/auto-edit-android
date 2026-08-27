@@ -43,6 +43,20 @@ public final class AeDesign {
         LinearLayout l = new LinearLayout(c); l.setOrientation(LinearLayout.VERTICAL); l.setPadding(dp(c,16), dp(c,14), dp(c,16), dp(c,14)); l.setBackground(bg(SURFACE, RADIUS, STROKE, 1)); return l;
     }
 
+    /** Round icon button for headers and transport controls. */
+    public static ImageView iconButton(Context c, int res, String desc, boolean primary) {
+        ImageView v = new ImageView(c);
+        v.setImageResource(res);
+        v.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        int s = dp(c, 44);
+        v.setPadding(dp(c, 11), dp(c, 11), dp(c, 11), dp(c, 11));
+        v.setBackground(primary ? gradient(ACCENT, ACCENT_2, dp(c, 16)) : bg(SURFACE_2, dp(c, 16), STROKE, 1));
+        v.setColorFilter(primary ? Color.WHITE : MUTED);
+        v.setContentDescription(desc);
+        press(v, () -> {});
+        return v;
+    }
+
     public static void press(View v, Runnable action) {
         v.setOnClickListener(x -> x.animate().scaleX(.96f).scaleY(.96f).alpha(.86f).setDuration(55).withEndAction(() -> x.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(85).withEndAction(action).start()).start());
     }

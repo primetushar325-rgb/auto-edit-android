@@ -6,6 +6,7 @@ import com.autoedit.model.*;import com.autoedit.engine.*;
 public class FrameRenderer {
     private final FormulaEngine formulas = new FormulaEngine();
     private final EffectEngine effects = new EffectEngine();
+    private final TransitionEngine transitions = new TransitionEngine();
     private final DiskBitmapCache diskCache;
     private final LruCache<String, Bitmap> memoryCache;
     private Bitmap frameBitmap; private Canvas frameCanvas;
@@ -22,28 +23,36 @@ public class FrameRenderer {
         int ci=0; float start=0; TimelineClip clip=project.clips.get(0);
         for(int i=0;i<project.clips.size();i++){ TimelineClip c=project.clips.get(i); if(timeSec < start+c.durationSec || i==project.clips.size()-1){ ci=i; clip=c; break;} start+=c.durationSec; }
         float local=Math.max(0, timeSec-start); float progress=Math.min(1, local/Math.max(.001f,clip.durationSec));
-        renderClip(clip, progress, width, height, fitMode, 1f);
+        renderClip(clip, progress, width, height, fitMode, 1f, 1f, 0f, 0f);
         float td=Math.min(clip.transitionDurationSec, clip.durationSec/2f);
         if(clip.transition!=TransitionType.NONE && ci<project.clips.size()-1 && td>0 && local>clip.durationSec-td){
             float tp=(local-(clip.durationSec-td))/td;
-            renderClip(project.clips.get(ci+1), 0f, width, height, fitMode, tp);
+            // Same transition math as the live preview (TransitionEngine): what you see is what you get.
+            TransitionEngine.Transform tr = transitions.incoming(clip.transition, tp);
+            if(transitions.fadesThroughBackground(clip.transition)){
+                Paint bg = new Paint(); bg.setColor(0xff020409); bg.setAlpha((int)(255*tr.alpha));
+                frameCanvas.drawRect(0,0,width,height,bg);
+            }
+            renderClip(project.clips.get(ci+1), 0f, width, height, fitMode, tr.alpha, tr.scale, tr.dx, tr.dy);
         }
         drawTexts(project, timeSec, width, height); return frameBitmap;
     }
 
     public Bitmap render(EditProject project, TimelineClip clip, float progress, int width, int height) throws IOException {
-        ensure(width,height); frameCanvas.drawColor(0xff020409); renderClip(clip,progress,width,height,project.fitMode,1f); drawTexts(project, projectTimeBefore(project,clip)+progress*clip.durationSec,width,height); return frameBitmap;
+        ensure(width,height); frameCanvas.drawColor(0xff020409); renderClip(clip,progress,width,height,project.fitMode,1f,1f,0f,0f); drawTexts(project, projectTimeBefore(project,clip)+progress*clip.durationSec,width,height); return frameBitmap;
     }
 
     private void ensure(int width,int height){ if(frameBitmap==null || frameBitmap.getWidth()!=width || frameBitmap.getHeight()!=height){ if(frameBitmap!=null) frameBitmap.recycle(); frameBitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888); frameCanvas=new Canvas(frameBitmap); } }
 
-    private void renderClip(TimelineClip clip, float progress, int width, int height, FitMode fitMode, float alpha) throws IOException {
+    private void renderClip(TimelineClip clip, float progress, int width, int height, FitMode fitMode, float alpha, float exScale, float dx, float dy) throws IOException {
         Bitmap src = getBitmap(clip.uri, width, height); if(src==null) throw new IOException("Invalid source image: "+clip.uri);
-        if(fitMode == FitMode.FIT) drawFitBackground(src, width, height, alpha);
+        if(fitMode == FitMode.FIT && exScale == 1f) drawFitBackground(src, width, height, alpha);
         KeyframeState st = formulas.stateAt(clip.formula, progress);
+        if(exScale != 1f) st.scale *= exScale;
         RectF dst = fitMode == FitMode.FIT ? computeFit(src.getWidth(),src.getHeight(),width,height,st) : computeFill(src.getWidth(),src.getHeight(),width,height,st);
-        Paint p = effects.paintFor(clip.effect, clip.effectIntensity); p.setAlpha((int)(255*st.opacity*alpha));
-        frameCanvas.save(); frameCanvas.rotate(st.rotation, width/2f, height/2f); frameCanvas.drawBitmap(src,null,dst,p); frameCanvas.restore();
+        if(dx != 0f || dy != 0f) dst.offset(dx*width, dy*height);
+        Paint p = effects.paintFor(clip.effect, clip.effectIntensity); p.setAlpha((int)(255*Math.max(0,Math.min(1,alpha))*st.opacity));
+        frameCanvas.save(); frameCanvas.rotate(st.rotation, width/2f+dx*width, height/2f+dy*height); frameCanvas.drawBitmap(src,null,dst,p); frameCanvas.restore();
         effects.drawPost(frameCanvas,width,height,clip.effect,clip.effectIntensity*alpha);
     }
 
