@@ -25,7 +25,7 @@ public class VideoExporter {
                 TimelineClip clip=project.clips.get(ci); int frames=Math.max(1, Math.round(clip.durationSec*opts.fps));
                 for(int f=0; f<frames; f++){
                     if(listener!=null && listener.isCancelled()) throw new InterruptedIOException("Export cancelled");
-                    float prog=frames==1?1f:f/(float)(frames-1); Bitmap frame=renderer.render(project,clip,prog,opts.width,opts.height);
+                    float prog=frames==1?1f:f/(float)(frames-1); Bitmap frame=renderer.renderAtTime(project, frameIndex/(float)opts.fps, opts.width, opts.height);
                     Yuv420Converter.bitmapToYuv420(frame,yuv,colorFormat);
                     boolean submitted=false; while(!submitted){ int in=encoder.dequeueInputBuffer(10_000); if(in>=0){ ByteBuffer buf=encoder.getInputBuffer(in); if(buf==null) throw new IOException("Encoder input buffer unavailable"); buf.clear(); buf.put(yuv); encoder.queueInputBuffer(in,0,yuv.length,frameIndex*1_000_000L/opts.fps,0); submitted=true; } DrainState pre=drainState(encoder,muxer,info,false,videoTrack,muxerStarted); if(pre.format!=null && !muxerStarted){ videoTrack=muxer.addTrack(pre.format); muxer.start(); muxerStarted=true; } }
                     DrainState ds=drainState(encoder,muxer,info,false,videoTrack,muxerStarted); if(ds.format!=null && !muxerStarted){ videoTrack=muxer.addTrack(ds.format); muxer.start(); muxerStarted=true; }
