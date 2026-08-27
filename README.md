@@ -15,3 +15,11 @@ GitHub Actions workflow is included in `.github/workflows/android.yml`.
 `Project -> TimelineClip -> FormulaEngine/Keyframes -> Transition/Effects/Text/Audio -> FrameRenderer -> MediaCodecVideoEncoder -> MediaMuxer -> MP4`
 
 The renderer decodes only the currently needed image with `BitmapFactory.Options.inSampleSize`, renders into a reusable frame bitmap, releases temporary images immediately, and never keeps all full-resolution images in memory.
+
+## 2026-08 Gallery/export hardening
+
+Exports are now created through `MediaStore.Video.Media` on Android 10+ using `IS_PENDING`, then published into `Movies/AutoEdit/` after a successful muxer close. Android 9 and below use public Movies/AutoEdit plus `MediaScannerConnection.scanFile()`.
+
+Export presets include 16:9 1920x1080, 9:16 1080x1920, 1:1 1080x1080, 4:5 1080x1350, 4:3 1440x1080, and custom W/H. Last-used preset, FPS, and Fit/Fill mode are persisted with the project.
+
+For speed and memory safety, source images are pre-decoded into a disk-based scaled export cache on a background thread pool. Rendering holds only a small LRU of scaled bitmaps and the current output frame; it does not retain full-resolution originals for 500-1000 image projects.
