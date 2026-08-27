@@ -1,0 +1,10 @@
+# Auto-Edit Existing Architecture Map
+
+- `com.autoedit.MainActivity`: single-activity Java UI. It owns navigation between Home, Create Project, Editor, Settings and Export UI. It invokes existing media pickers, mutates `EditProject`, saves via `ProjectStore`, and starts export via `ExportService`.
+- Editor/timeline: `MainActivity.buildTimeline()` and `refreshTimeline()` render the timeline from `EditProject.clips`. Each `TimelineClip` is one imported image, ordered by list position and selected by index. Long-press supports move left/right, duplicate and delete.
+- Media picker: `MainActivity.pickImages()` and `pickAudio()` use Android Storage Access Framework `ACTION_OPEN_DOCUMENT` with persistable URI permission; results are handled in `onActivityResult()` and appended as `TimelineClip` records.
+- Preview renderer: `com.autoedit.ui.PreviewView` renders the current project state for playback using clip order and clip duration values, applying formula motion and effects.
+- Project storage: `com.autoedit.project.ProjectStore` serializes/deserializes `EditProject`, clip URIs, order, durations, formulas, transitions, effects, text and audio state to local SharedPreferences JSON.
+- Project/timeline model: `EditProject` contains canvas/export settings and an ordered `ArrayList<TimelineClip>`. `TimelineClip` contains URI, duration, formula, transition and effect state.
+- Engines: `FormulaEngine`, `EffectEngine`, and `TransitionEngine` provide reusable motion, effect and transition state/render helpers.
+- Export flow: `MainActivity.startExistingExport()` creates an Intent for `com.autoedit.export.ExportService`; `ExportService` calls the existing MediaCodec/MediaMuxer pipeline and Gallery/MediaStore save flow. Per v5, this export implementation is protected and must not be modified.
