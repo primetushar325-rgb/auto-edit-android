@@ -1,11 +1,18 @@
 package com.autoedit;
 
 import android.app.*;
+import android.content.ContentUris;
+import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.*;
 import android.content.*;
-import android.graphics.Typeface;
+import android.content.pm.PackageManager;
+import android.provider.MediaStore;
 import android.util.Log;
 import android.view.*;
 import android.widget.*;
@@ -39,10 +46,29 @@ public class MainActivity extends Activity {
     private ImageView playButton;
     private LinearLayout panelHost;
     private final List<TextView> chips = new ArrayList<>();
+    private final List<ImageView> junctions = new ArrayList<>();
     private int lastActiveChip = -1;
     private float lastFrameT = 0f;
     private int batchDur = 5;
+    /** Clip index whose .transition defines the junction panel scope (-1 = selected/all). */
+    private int transitionScopeClip = -1;
     private final Map<String, ToolTile> tiles = new HashMap<>();
+
+    // --- export progress screen state (survives activity recreation; the
+    //     service keeps exporting independently of the UI)
+    private boolean exportRunning = false;
+    private int lastExportPct = 0;
+    private String lastExportMsg = "";
+    private ExportRingView ring;
+    private NeonProgressBar neonBar;
+    private TextView pctBig, statusBig;
+
+    // export completion widgets (kept for the async permission-grant refresh)
+    private static final int REQ_VIDEO_PERM = 20;
+    private ImageView completionThumb;
+    private Button completionPlay, completionShare;
+    private Uri completionUri;
+    private String completionFileName;
 
     // audio preview (real playback in preview; export is video-only)
     private MediaPlayer audioPlayer;
@@ -64,16 +90,29 @@ public class MainActivity extends Activity {
         }
     };
 
-    @Override public void onCreate(Bundle b) {
-        super.onCreate(b);
+    @Override public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
         store = new ProjectStore(this);
         formulas = new FormulaEngine();
         project = store.load();
         draftPreset = project.exportPreset;
         draftFps = project.fps;
         draftFit = project.fitMode;
-        showHome();
+        if (savedInstanceState != null) {
+            // Activity was recreated (rotation/config): restore export state.
+            exportRunning = savedInstanceState.getBoolean("exportRunning", false);
+            lastExportPct = savedInstanceState.getInt("exportPct", 0);
+            lastExportMsg = savedInstanceState.getString("exportMsg", "");
+        }
+        if (exportRunning) showExportProgressScreen(); else showHome();
         handler.postDelayed(autosave, 30000);
+    }
+
+    @Override protected void onSaveInstanceState(Bundle b) {
+        super.onSaveInstanceState(b);
+        b.putBoolean("exportRunning", exportRunning);
+        b.putInt("exportPct", lastExportPct);
+        b.putString("exportMsg", lastExportMsg);
     }
 
     @Override protected void onResume() {
@@ -96,9 +135,28 @@ public class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        if ("exporting".equals(screen)) {
+            if (exportRunning) confirmCancelExport();
+            else showEditor();
+            return;
+        }
         if ("editor".equals(screen)) showHome();
         else if ("create".equals(screen) || "export".equals(screen) || "settings".equals(screen)) showEditor();
         else super.onBackPressed();
+    }
+
+    private void confirmCancelExport() {
+        new AlertDialog.Builder(this)
+                .setTitle("Export in progress")
+                .setMessage("Are you sure you want to stop exporting? The partial file will be deleted.")
+                .setPositiveButton("Continue Export", null)
+                .setNegativeButton("Cancel Export", (d, w) -> {
+                    Intent ci = new Intent(this, ExportService.class);
+                    ci.setAction(ExportService.ACTION_CANCEL);
+                    startService(ci);
+                    toast("Cancelling export...");
+                })
+                .show();
     }
 
     // ---------------------------------------------------------------- layout
@@ -275,6 +333,7 @@ public class MainActivity extends Activity {
         screen = "editor";
         base();
         tiles.clear();
+        transitionScopeClip = -1;
 
         // --- header: back | title+save | undo | redo | EXPORT
         LinearLayout header = row();
@@ -431,6 +490,7 @@ public class MainActivity extends Activity {
         if (structural) {
             timeline.removeAllViews();
             chips.clear();
+            junctions.clear();
             for (int i = 0; i < project.clips.size(); i++) {
                 TimelineClip c = project.clips.get(i);
                 TextView v = label("", 10, AeDesign.TEXT, Typeface.BOLD);
@@ -439,6 +499,7 @@ public class MainActivity extends Activity {
                 final int ix = i;
                 AeDesign.press(v, () -> {
                     selected = ix;
+                    transitionScopeClip = -1;
                     if (preview != null) preview.seekTo(project.clips.get(ix).startTimeMsIn(project) / 1000f);
                     refreshSelection();
                     showClipPanel();
@@ -448,6 +509,23 @@ public class MainActivity extends Activity {
                 lp.leftMargin = dp((int) TimelineRulerView.GAP_DP);
                 timeline.addView(v, lp);
                 chips.add(v);
+                // CapCut-style junction control: between clip i-1 and clip i ONLY
+                // (never before the first clip / after the last). Zero net width
+                // (negative margins) so the ruler playhead geometry is untouched.
+                if (i > 0) {
+                    final int junctionClip = i - 1; // clip whose .transition defines this junction
+                    ImageView j = new ImageView(this);
+                    j.setPadding(dp(6), dp(6), dp(6), dp(6));
+                    j.setContentDescription("Add transition between clip " + i + " and " + (i + 1));
+                    j.setElevation(dp(5));
+                    AeDesign.press(j, () -> { transitionScopeClip = junctionClip; transitionPanel(); });
+                    LinearLayout.LayoutParams jlp = new LinearLayout.LayoutParams(dp(28), dp(28));
+                    jlp.leftMargin = -dp(14);
+                    jlp.rightMargin = -dp(14);
+                    jlp.topMargin = (dp(84) - dp(28)) / 2;
+                    timeline.addView(j, jlp);
+                    junctions.add(j);
+                }
             }
         }
         for (int i = 0; i < project.clips.size() && i < chips.size(); i++) {
@@ -467,7 +545,20 @@ public class MainActivity extends Activity {
         }
         if (metaLabel != null) metaLabel.setText(project.clips.size() + " clips • " + project.fps + " FPS • " + project.fitMode.label + " • " + fmt(project.totalDurationSec()));
         if (playLabel != null) playLabel.setText(fmt(preview == null ? 0f : preview.currentTimeSec()) + " / " + fmt(project.totalDurationSec()));
+        refreshJunctionIcons();
         if (preview != null) preview.invalidate();
+    }
+
+    /** Junction k sits between clip k and k+1; its state is clips[k].transition. */
+    private void refreshJunctionIcons() {
+        for (int k = 0; k < junctions.size(); k++) {
+            if (k + 1 >= project.clips.size()) continue;
+            boolean has = project.clips.get(k).transition != TransitionType.NONE;
+            ImageView v = junctions.get(k);
+            v.setImageResource(has ? R.drawable.ic_transition : R.drawable.ic_add);
+            v.setColorFilter(has ? AeDesign.ACCENT : AeDesign.MUTED);
+            v.setBackground(AeDesign.bg(has ? 0xff12395c : AeDesign.SURFACE, dp(14), has ? AeDesign.ACCENT : AeDesign.STROKE, has ? 2 : 1));
+        }
     }
 
     private void styleChip(int i) {
@@ -576,31 +667,88 @@ public class MainActivity extends Activity {
                 new Runnable[]{() -> applyFormula("06"), () -> applyFormula("07"), () -> applyFormula("02"), () -> applyFormula("04"), () -> applyFormula("05"), () -> applyFormula("01"), () -> applyFormula("14"), () -> applyFormula("00")});
     }
 
+    /**
+     * Formula cards: each card loops a lightweight preview (same FormulaEngine
+     * math as preview/export) that visually demonstrates the sequence.
+     * Tap applies the WHOLE sequence — to the selected clip, or to ALL clips
+     * when none is selected. "None" removes the formula.
+     */
     private void formulaBatchPanel() {
         openTool("formula");
-        showPanel("Motion Formula (apply to ALL)",
-                new String[]{"Story Zoom → All", "Documentary → All", "Cinematic → All", "Pan Mix → All", "Slow Motion → All", "Remove from All"},
-                new Runnable[]{
-                        () -> applyFormulaSequenceToAll("story"),
-                        () -> applyFormulaSequenceToAll("documentary"),
-                        () -> applyFormulaSequenceToAll("cinematic"),
-                        () -> applyFormulaSequenceToAll("pan"),
-                        () -> applyFormulaSequenceToAll("slow"),
-                        () -> applyFormulaSequenceToAll("none")
-                });
+        if (panelHost == null) return;
+        panelHost.removeAllViews();
+        String scope = selected >= 0 ? "selected clip" : "ALL clips";
+        panelHost.addView(label("Motion Formulas → " + scope + " (full sequence applied at once)", 15, AeDesign.TEXT, Typeface.BOLD));
+        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        hsv.setHorizontalScrollBarEnabled(false);
+        LinearLayout cards = row();
+        addFormulaCard(cards, "00");
+        for (Formula s : formulas.sequences()) addFormulaCard(cards, s.id);
+        addFormulaCard(cards, "17");
+        addFormulaCard(cards, "06");
+        hsv.addView(cards);
+        panelHost.addView(hsv, new LinearLayout.LayoutParams(-1, -2));
+        panelHost.addView(label("Card previews loop the real sequence. Applying never touches the original media — only the clip's formula state (undo/redo safe).", 12, AeDesign.MUTED, Typeface.NORMAL));
+    }
+
+    private void addFormulaCard(LinearLayout parent, String id) {
+        Formula f = formulas.byId(id);
+        LinearLayout card = col();
+        card.setPadding(dp(8), dp(8), dp(8), dp(8));
+        FormulaPreviewView pv = new FormulaPreviewView(this);
+        pv.setFormula(f);
+        card.addView(pv, new LinearLayout.LayoutParams(dp(112), dp(132)));
+        TextView name = label(f.name, 12, AeDesign.TEXT, Typeface.BOLD);
+        name.setGravity(Gravity.CENTER);
+        card.addView(name, new LinearLayout.LayoutParams(-1, -2));
+        String sub = f.isSequence()
+                ? f.category + " • " + Math.round(f.totalDurationSec()) + "s • " + f.steps.size() + " steps"
+                : "Single motion";
+        TextView cat = label(sub, 10, AeDesign.MUTED, Typeface.NORMAL);
+        cat.setGravity(Gravity.CENTER);
+        card.addView(cat, new LinearLayout.LayoutParams(-1, -2));
+
+        boolean applied;
+        if (selected >= 0 && selected < project.clips.size()) applied = sameFormulaId(project.clips.get(selected).formula, id);
+        else if (!project.clips.isEmpty()) {
+            applied = true;
+            for (TimelineClip c : project.clips) if (!sameFormulaId(c.formula, id)) { applied = false; break; }
+        } else applied = false;
+
+        card.setBackground(AeDesign.bg(AeDesign.SURFACE, dp(18), applied ? AeDesign.ACCENT : AeDesign.STROKE, applied ? 2 : 1));
+        final String fid = id;
+        AeDesign.press(card, () -> {
+            applyFormula(fid);
+            formulaBatchPanel(); // refresh applied state
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMargins(dp(6), dp(4), dp(6), dp(4));
+        parent.addView(card, lp);
+    }
+
+    private boolean sameFormulaId(Formula a, String id) {
+        return a != null && a.id != null && a.id.equals(id);
     }
 
     private void transitionPanel() {
         openTool("transition");
+        boolean junctionScoped = transitionScopeClip >= 0 && transitionScopeClip + 1 < project.clips.size();
+        String scope;
+        if (junctionScoped) scope = "Clip " + (transitionScopeClip + 1) + " → " + (transitionScopeClip + 2);
+        else scope = selected >= 0 ? "Clip " + project.clips.get(selected).index : "ALL clips";
         TransitionType[] vals = TransitionEngine.rendered();
         String[] n = new String[vals.length];
         Runnable[] r = new Runnable[vals.length];
         for (int i = 0; i < vals.length; i++) {
             n[i] = TransitionEngine.label(vals[i]);
             final TransitionType t = vals[i];
-            r[i] = () -> applyTransition(t);
+            r[i] = () -> {
+                if (transitionScopeClip >= 0) applyTransitionAt(transitionScopeClip, t);
+                else applyTransition(t);
+                if (junctionScoped) transitionPanel(); // keep panel open, refresh scope line
+            };
         }
-        showPanel("Transition → " + (selected >= 0 ? "Clip " + project.clips.get(selected).index : "ALL clips") + " (all rendered in preview + export)", n, r);
+        showPanel("Transition → " + scope + (junctionScoped ? " (junction)" : "") + " • rendered in preview + export", n, r);
     }
 
     private void textStudio() {
@@ -741,12 +889,24 @@ public class MainActivity extends Activity {
     }
 
     private void applyTransition(TransitionType t) {
+        if (selected >= 0) { applyTransitionAt(selected, t); return; }
         pushUndo();
-        if (selected >= 0) project.clips.get(selected).transition = t;
-        else for (TimelineClip c : project.clips) c.transition = t;
+        for (TimelineClip c : project.clips) c.transition = t;
         saveProject(true);
+        buildTimeline(false);
         if (preview != null) preview.invalidate();
-        toast("Transition: " + TransitionEngine.label(t) + " → " + (selected >= 0 ? "Clip " + project.clips.get(selected).index : "ALL clips"));
+        toast("Transition: " + TransitionEngine.label(t) + " → ALL " + project.clips.size() + " clips");
+    }
+
+    /** Sets the transition at one specific junction (clip clipIdx → clip clipIdx+1). */
+    private void applyTransitionAt(int clipIdx, TransitionType t) {
+        if (clipIdx < 0 || clipIdx >= project.clips.size()) return;
+        pushUndo();
+        project.clips.get(clipIdx).transition = t;
+        saveProject(true);
+        buildTimeline(false);
+        if (preview != null) preview.invalidate();
+        toast("Transition: " + TransitionEngine.label(t) + " (Clip " + (clipIdx + 1) + " → " + (clipIdx + 2) + ")");
     }
 
     private void applyEffect(EffectType e) {
@@ -1043,6 +1203,7 @@ public class MainActivity extends Activity {
 
     private void startExistingExport() {
         if (project.clips.isEmpty()) { toast("Import images first"); return; }
+        if (exportRunning) { toast("Export already running"); showExportProgressScreen(); return; }
         int width = draftPreset.width, height = draftPreset.height;
         if (draftPreset == ExportPreset.CUSTOM) { width = project.width; height = project.height; }
         project.exportPreset = draftPreset;
@@ -1060,18 +1221,117 @@ public class MainActivity extends Activity {
         i.putExtra("fitMode", project.fitMode.name());
         saveProject(true);
         startService(i);
-        updateExportProgress(1, "Preparing...");
+        exportRunning = true;
+        lastExportPct = 1;
+        lastExportMsg = "Preparing...";
+        showExportProgressScreen();
+    }
+
+    /**
+     * Full-screen premium export progress screen.
+     * Every percentage shown here comes from the REAL export pipeline
+     * (ExportService broadcast: image optimization 0–10%, frame rendering
+     * 10–99%, finalization 100%). No timers, no fake progress.
+     */
+    private void showExportProgressScreen() {
+        screen = "exporting";
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setBackgroundColor(AeDesign.BG);
+        l.setPadding(dp(16), dp(14), dp(16), dp(14));
+        applySystemInsets(l);
+        setContentView(l);
+
+        // hero: rotating neon ring + pulsing glow + logo + particles
+        FrameLayout top = new FrameLayout(this);
+        ring = new ExportRingView(this);
+        ring.setRunning(exportRunning);
+        ring.setDone(!exportRunning);
+        ring.setProgress(exportRunning ? lastExportPct / 100f : 1f);
+        top.addView(ring, new FrameLayout.LayoutParams(-1, -1));
+        ImageView close = AeDesign.iconButton(this, R.drawable.ic_close, "Close", false);
+        AeDesign.press(close, () -> {
+            if (exportRunning) confirmCancelExport();
+            else showEditor();
+        });
+        FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP | Gravity.END);
+        clp.topMargin = dp(4);
+        clp.rightMargin = dp(4);
+        top.addView(close, clp);
+        l.addView(top, new LinearLayout.LayoutParams(-1, 0, 1.2f));
+
+        // center content
+        LinearLayout center = col();
+        center.setGravity(Gravity.CENTER_HORIZONTAL);
+        TextView title = label("EXPORTING VIDEO", 24, AeDesign.TEXT, Typeface.BOLD);
+        title.setGravity(Gravity.CENTER);
+        center.addView(title);
+        TextView sub = label("Please wait while we export your video...", 13, AeDesign.MUTED, Typeface.NORMAL);
+        sub.setGravity(Gravity.CENTER);
+        center.addView(sub);
+        pctBig = label(exportRunning ? lastExportPct + "%" : "100%", 52, AeDesign.ACCENT, Typeface.BOLD);
+        pctBig.setGravity(Gravity.CENTER);
+        center.addView(pctBig, new LinearLayout.LayoutParams(-1, -2));
+        neonBar = new NeonProgressBar(this);
+        neonBar.setRunning(exportRunning);
+        neonBar.setProgress(exportRunning ? lastExportPct / 100f : 1f);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, dp(18));
+        blp.topMargin = dp(10);
+        center.addView(neonBar, blp);
+        statusBig = label(exportRunning ? exportStatusText(lastExportPct) : "Export complete!", 13, AeDesign.MUTED, Typeface.NORMAL);
+        statusBig.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
+        slp.topMargin = dp(12);
+        center.addView(statusBig, slp);
+        l.addView(center, new LinearLayout.LayoutParams(-1, -2));
+        l.addView(col(), new LinearLayout.LayoutParams(-1, 0, 0.6f));
+
+        if (!exportRunning) showExportComplete(lastExportMsg);
+    }
+
+    private String exportStatusText(int p) {
+        if (p < 30) return "Preparing your video...";
+        if (p < 70) return "Processing your video...";
+        if (p < 95) return "Almost done... Please wait";
+        return "Finalizing your video...";
     }
 
     private void updateExportProgress(int p, String m) {
+        lastExportPct = p;
+        lastExportMsg = m == null ? "" : m;
+        if (p == 100) {
+            exportRunning = false;
+            if ("exporting".equals(screen)) showExportComplete(m);
+            else toast("✓ Export complete: " + m);
+            if (exportProgress != null) { exportProgress.setProgress(100); exportPercent.setText("100%"); exportStage.setText("✓ Export Complete • " + m); }
+            return;
+        }
+        if (p < 0) {
+            exportRunning = false;
+            if ("exporting".equals(screen)) showExportFailed(m);
+            else toast("Export failed: " + m);
+            if (exportProgress != null) { exportPercent.setText("Failed"); exportStage.setText(m); }
+            return;
+        }
+        if ("exporting".equals(screen)) {
+            if (pctBig != null) pctBig.setText(p + "%");
+            if (neonBar != null) neonBar.setProgress(p / 100f);
+            if (ring != null) ring.setProgress(p / 100f);
+            if (statusBig != null) {
+                String s = exportStatusText(p);
+                if (!s.equals(statusBig.getText().toString())) {
+                    statusBig.animate().alpha(0f).setDuration(120).withEndAction(() -> {
+                        statusBig.setText(s);
+                        statusBig.animate().alpha(1f).setDuration(180).start();
+                    }).start();
+                }
+            }
+        }
         if (exportProgress != null) {
             exportProgress.setProgress(Math.max(0, p));
-            exportPercent.setText(p < 0 ? "Failed" : p + "%");
-            exportStage.setText(p < 0 ? m : stage(p, m));
-            if (p == 100) exportStage.setText("✓ Export Complete • " + m);
+            exportPercent.setText(p + "%");
+            exportStage.setText(stage(p, m));
         }
-        if (p == 100) toast("✓ Export complete: " + m);
-        else if (p < 0) toast("Export failed: " + m);
     }
 
     private String stage(int p, String m) {
@@ -1081,6 +1341,157 @@ public class MainActivity extends Activity {
         if (p < 85) return "Encoding... " + m;
         if (p < 100) return "Saving to Gallery... " + m;
         return m;
+    }
+
+    // ------------------------------------------------- export completion
+
+    private void showExportComplete(String m) {
+        if (ring != null) { ring.setRunning(false); ring.setDone(true); }
+        if (neonBar != null) { neonBar.setRunning(false); neonBar.setProgress(1f); }
+        if (pctBig != null) pctBig.setText("100%");
+        if (statusBig != null) { statusBig.setText("Export complete!"); statusBig.setTextColor(0xff7ce0a2); }
+
+        // find the saved video in the Gallery (MediaStore) for thumbnail/actions
+        String fileName = null;
+        if (m != null) { int i = m.lastIndexOf('/'); if (i >= 0) fileName = m.substring(i + 1).trim(); }
+        completionFileName = fileName;
+        completionUri = fileName == null ? null : findExportedVideo(fileName);
+
+        // completion card: thumbnail + actions (replaces the status line)
+        LinearLayout holder = (LinearLayout) statusBig.getParent();
+        statusBig.setVisibility(View.GONE);
+
+        LinearLayout done = col();
+        done.setGravity(Gravity.CENTER_HORIZONTAL);
+        done.setPadding(0, dp(14), 0, 0);
+        completionThumb = new ImageView(this);
+        completionThumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        completionThumb.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(18), AeDesign.ACCENT, 2));
+        done.addView(completionThumb, new LinearLayout.LayoutParams(dp(120), dp(120)));
+        completionThumb.setScaleX(0.6f); completionThumb.setScaleY(0.6f);
+        completionThumb.animate().scaleX(1f).scaleY(1f).setDuration(380).start();
+        TextView saved = label(fileName != null ? fileName : "Saved to Movies/AutoEdit", 12, AeDesign.MUTED, Typeface.NORMAL);
+        saved.setGravity(Gravity.CENTER);
+        done.addView(saved, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout btns = row();
+        btns.setGravity(Gravity.CENTER);
+        completionPlay = AeDesign.button(this, "Play Video", true);
+        btns.addView(completionPlay, new LinearLayout.LayoutParams(-2, dp(48)));
+        completionShare = AeDesign.button(this, "Share", false);
+        LinearLayout.LayoutParams slp2 = new LinearLayout.LayoutParams(-2, dp(48));
+        slp2.leftMargin = dp(8);
+        btns.addView(completionShare, slp2);
+        Button doneBtn = AeDesign.button(this, "Done", false);
+        AeDesign.press(doneBtn, () -> showEditor());
+        LinearLayout.LayoutParams dlp2 = new LinearLayout.LayoutParams(-2, dp(48));
+        dlp2.leftMargin = dp(8);
+        btns.addView(doneBtn, dlp2);
+        done.addView(btns, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(-1, -2);
+        dlp.topMargin = dp(6);
+        holder.addView(done, dlp);
+        wireCompletionVideo();
+    }
+
+    /**
+     * Looks up the exported video in MediaStore and enables thumbnail /
+     * Play / Share. On Android 13+ this needs READ_MEDIA_VIDEO — requested
+     * once here, then the UI refreshes automatically when granted.
+     */
+    private void wireCompletionVideo() {
+        if (!"exporting".equals(screen) || completionFileName == null) return;
+        if (completionUri == null) completionUri = findExportedVideo(completionFileName);
+        if (completionUri == null && Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(android.Manifest.permission.READ_MEDIA_VIDEO)
+                    != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.READ_MEDIA_VIDEO}, REQ_VIDEO_PERM);
+            return;
+        }
+        if (completionThumb == null) return;
+        Bitmap t = completionUri == null ? null : loadVideoThumb(completionUri);
+        if (t != null) completionThumb.setImageBitmap(t);
+        else completionThumb.setImageResource(R.drawable.ic_play);
+        boolean ok = completionUri != null;
+        completionPlay.setEnabled(ok);
+        completionPlay.setAlpha(ok ? 1f : .5f);
+        if (ok) AeDesign.press(completionPlay, () -> playVideo(completionUri));
+        completionShare.setAlpha(ok ? 1f : .5f);
+        if (ok) AeDesign.press(completionShare, () -> shareVideo(completionUri));
+    }
+
+    @Override public void onRequestPermissionsResult(int req, String[] perms, int[] res) {
+        super.onRequestPermissionsResult(req, perms, res);
+        if (req == REQ_VIDEO_PERM && res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) {
+            completionUri = null;
+            wireCompletionVideo();
+        }
+    }
+
+    private void showExportFailed(String m) {
+        if (ring != null) { ring.setRunning(false); ring.setDone(true); }
+        if (neonBar != null) { neonBar.setRunning(false); }
+        if (pctBig != null) { pctBig.setText("—"); pctBig.setTextColor(AeDesign.DANGER); }
+        if (statusBig != null) { statusBig.setText(m == null ? "Export stopped" : m); statusBig.setTextColor(AeDesign.DANGER); }
+        LinearLayout holder = (LinearLayout) statusBig.getParent();
+        Button again = AeDesign.button(this, "Back to Editor", true);
+        AeDesign.press(again, () -> showEditor());
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(-2, dp(52));
+        alp.topMargin = dp(18);
+        holder.addView(again, alp);
+    }
+
+    private Uri findExportedVideo(String fileName) {
+        try {
+            Uri coll = MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
+            Cursor c = getContentResolver().query(coll, new String[]{MediaStore.Video.Media._ID},
+                    MediaStore.Video.Media.DISPLAY_NAME + "=?", new String[]{fileName},
+                    MediaStore.Video.Media.DATE_ADDED + " DESC");
+            if (c != null) {
+                if (c.moveToFirst()) { long id = c.getLong(0); c.close(); return ContentUris.withAppendedId(coll, id); }
+                c.close();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "MediaStore lookup failed", e);
+        }
+        return null;
+    }
+
+    @SuppressWarnings("deprecation")
+    private Bitmap loadVideoThumb(Uri uri) {
+        try {
+            Cursor c = getContentResolver().query(uri, new String[]{MediaStore.Video.Media._ID}, null, null, null);
+            long id = 0;
+            if (c != null) { if (c.moveToFirst()) id = c.getLong(0); c.close(); }
+            if (id <= 0) return null;
+            return MediaStore.Video.Thumbnails.getThumbnail(getContentResolver(), id,
+                    MediaStore.Video.Thumbnails.MINI_KIND, new BitmapFactory.Options());
+        } catch (Exception e) {
+            Log.e(TAG, "Thumbnail load failed", e);
+            return null;
+        }
+    }
+
+    private void playVideo(Uri uri) {
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(uri, "video/mp4");
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(i, "Play video"));
+        } catch (Exception e) {
+            toast("Could not open video: " + e.getMessage());
+        }
+    }
+
+    private void shareVideo(Uri uri) {
+        try {
+            Intent i = new Intent(Intent.ACTION_SEND);
+            i.setType("video/mp4");
+            i.putExtra(Intent.EXTRA_STREAM, uri);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(i, "Share video"));
+        } catch (Exception e) {
+            toast("Could not share video: " + e.getMessage());
+        }
     }
 
     // ---------------------------------------------------------------- settings

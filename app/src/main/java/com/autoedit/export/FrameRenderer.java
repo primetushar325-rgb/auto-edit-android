@@ -24,6 +24,16 @@ public class FrameRenderer {
         for(int i=0;i<project.clips.size();i++){ TimelineClip c=project.clips.get(i); if(timeSec < start+c.durationSec || i==project.clips.size()-1){ ci=i; clip=c; break;} start+=c.durationSec; }
         float local=Math.max(0, timeSec-start); float progress=Math.min(1, local/Math.max(.001f,clip.durationSec));
         renderClip(clip, progress, width, height, fitMode, 1f, 1f, 0f, 0f);
+        // multi-motion formula: crossfade at step boundaries (same math as the live preview)
+        float sm=formulas.stepTransitionMix(clip.formula, local);
+        if(sm>0f){
+            TransitionType stT=formulas.stepTransitionAt(clip.formula, local);
+            if(transitions.fadesThroughBackground(stT)){
+                Paint bg=new Paint(); bg.setColor(0xff020409); bg.setAlpha((int)(255*sm));
+                frameCanvas.drawRect(0,0,width,height,bg);
+            }
+            renderClipWithState(clip, formulas.nextStepStateAt(clip.formula, local), width, height, fitMode, sm, 0f, 0f);
+        }
         float td=Math.min(clip.transitionDurationSec, clip.durationSec/2f);
         if(clip.transition!=TransitionType.NONE && ci<project.clips.size()-1 && td>0 && local>clip.durationSec-td){
             float tp=(local-(clip.durationSec-td))/td;
@@ -49,11 +59,30 @@ public class FrameRenderer {
         if(fitMode == FitMode.FIT && exScale == 1f) drawFitBackground(src, width, height, alpha);
         KeyframeState st = formulas.stateAt(clip.formula, progress);
         if(exScale != 1f) st.scale *= exScale;
+        EffectType eff = effectiveEffect(clip, progress * clip.durationSec);
+        float intensity = effectiveIntensity(clip, progress * clip.durationSec);
         RectF dst = fitMode == FitMode.FIT ? computeFit(src.getWidth(),src.getHeight(),width,height,st) : computeFill(src.getWidth(),src.getHeight(),width,height,st);
         if(dx != 0f || dy != 0f) dst.offset(dx*width, dy*height);
-        Paint p = effects.paintFor(clip.effect, clip.effectIntensity); p.setAlpha((int)(255*Math.max(0,Math.min(1,alpha))*st.opacity));
+        Paint p = effects.paintFor(eff, intensity); p.setAlpha((int)(255*Math.max(0,Math.min(1,alpha))*st.opacity));
         frameCanvas.save(); frameCanvas.rotate(st.rotation, width/2f+dx*width, height/2f+dy*height); frameCanvas.drawBitmap(src,null,dst,p); frameCanvas.restore();
-        effects.drawPost(frameCanvas,width,height,clip.effect,clip.effectIntensity*alpha);
+        effects.drawPost(frameCanvas,width,height,eff,intensity*alpha);
+    }
+
+    private void renderClipWithState(TimelineClip clip, KeyframeState st, int width, int height, FitMode fitMode, float alpha, float dx, float dy) throws IOException {
+        Bitmap src = getBitmap(clip.uri, width, height); if(src==null) throw new IOException("Invalid source image: "+clip.uri);
+        EffectType eff = clip.effect;
+        RectF dst = fitMode == FitMode.FIT ? computeFit(src.getWidth(),src.getHeight(),width,height,st) : computeFill(src.getWidth(),src.getHeight(),width,height,st);
+        if(dx != 0f || dy != 0f) dst.offset(dx*width, dy*height);
+        Paint p = effects.paintFor(eff, clip.effectIntensity); p.setAlpha((int)(255*Math.max(0,Math.min(1,alpha))*st.opacity));
+        frameCanvas.save(); frameCanvas.rotate(st.rotation, width/2f+dx*width, height/2f+dy*height); frameCanvas.drawBitmap(src,null,dst,p); frameCanvas.restore();
+    }
+
+    private EffectType effectiveEffect(TimelineClip clip, float tSec){
+        EffectType e = formulas.effectAt(clip.formula, tSec);
+        return e == null ? clip.effect : e;
+    }
+    private float effectiveIntensity(TimelineClip clip, float tSec){
+        return formulas.stepEffectIntensity(clip.formula, tSec, clip.effectIntensity);
     }
 
     private Bitmap getBitmap(String uri, int w, int h) throws IOException {

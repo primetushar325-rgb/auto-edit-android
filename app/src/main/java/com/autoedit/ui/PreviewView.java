@@ -69,6 +69,19 @@ public class PreviewView extends View {
         ClipAtTime active = findClip(t);
         try {
             drawClip(canvas, active.clip, active.progress, 1f, 1f, 0f, 0f);
+            // multi-motion formula: crossfade at step boundaries (same math as export)
+            float sm = formulas.stepTransitionMix(active.clip.formula, active.localTime);
+            if (sm > 0f) {
+                KeyframeState stN = formulas.nextStepStateAt(active.clip.formula, active.localTime);
+                TransitionType stT = formulas.stepTransitionAt(active.clip.formula, active.localTime);
+                if (transitions.fadesThroughBackground(stT)) {
+                    Paint bg = new Paint();
+                    bg.setColor(0xff071422);
+                    bg.setAlpha((int) (255 * sm));
+                    canvas.drawRect(8, 8, getWidth() - 8f, getHeight() - 8f, bg);
+                }
+                drawClipWithState(canvas, active.clip, stN, sm, effectiveEffect(active.clip, active.localTime), effectiveIntensity(active.clip, active.localTime), 0f, 0f);
+            }
             // transition window: last td seconds of the active clip reveal the next clip
             float td = Math.min(active.clip.transitionDurationSec, active.clip.durationSec / 2f);
             if (active.index < project.clips.size() - 1 && active.clip.transition != TransitionType.NONE && td > 0 && active.localTime > active.clip.durationSec - td) {
@@ -123,21 +136,35 @@ public class PreviewView extends View {
      * the incoming clip (identity for the main clip).
      */
     private void drawClip(Canvas canvas, TimelineClip clip, float progress, float alphaMul, float exScale, float dx, float dy) throws IOException {
-        Bitmap b = getBitmap(clip.uri);
-        if (b == null) throw new IOException("Decode returned null for: " + clip.uri);
         KeyframeState st = formulas.stateAt(clip.formula, progress);
         if (exScale != 1f) st.scale *= exScale;
+        drawClipWithState(canvas, clip, st, alphaMul, effectiveEffect(clip, progress * clip.durationSec), effectiveIntensity(clip, progress * clip.durationSec), dx, dy);
+    }
+
+    /** Effect/intensity: a formula sequence step can override the clip's own effect. */
+    private EffectType effectiveEffect(TimelineClip clip, float tSec) {
+        EffectType e = formulas.effectAt(clip.formula, tSec);
+        return e == null ? clip.effect : e;
+    }
+
+    private float effectiveIntensity(TimelineClip clip, float tSec) {
+        return formulas.stepEffectIntensity(clip.formula, tSec, clip.effectIntensity);
+    }
+
+    private void drawClipWithState(Canvas canvas, TimelineClip clip, KeyframeState st, float alphaMul, EffectType eff, float intensity, float dx, float dy) throws IOException {
+        Bitmap b = getBitmap(clip.uri);
+        if (b == null) throw new IOException("Decode returned null for: " + clip.uri);
         RectF dst = project.fitMode == FitMode.FIT ? fitInside(b.getWidth(), b.getHeight(), getWidth(), getHeight(), st)
                 : fill(b.getWidth(), b.getHeight(), getWidth(), getHeight(), st);
         if (dx != 0f || dy != 0f) dst.offset(dx * getWidth(), dy * getHeight());
         if (project.fitMode == FitMode.FIT) drawFitBars(canvas, b, alphaMul);
-        Paint paint = effects.paintFor(clip.effect, clip.effectIntensity);
+        Paint paint = effects.paintFor(eff, intensity);
         paint.setAlpha((int) (255 * Math.max(0f, Math.min(1f, alphaMul)) * st.opacity));
         canvas.save();
         canvas.rotate(st.rotation, getWidth() / 2f + dx * getWidth(), getHeight() / 2f + dy * getHeight());
         canvas.drawBitmap(b, null, dst, paint);
         canvas.restore();
-        effects.drawPost(canvas, getWidth(), getHeight(), clip.effect, clip.effectIntensity * alphaMul);
+        effects.drawPost(canvas, getWidth(), getHeight(), eff, intensity * alphaMul);
     }
 
     private void drawHud(Canvas canvas, float t, ClipAtTime active, float total) {
