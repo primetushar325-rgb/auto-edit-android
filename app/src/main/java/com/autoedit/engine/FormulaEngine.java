@@ -35,8 +35,9 @@ public class FormulaEngine {
         addSequence("S1","Cinematic Travel","Travel","06","07","02","04");
         addSequence("S2","Story Flow","Story","14","04","15");
         addSequence("S3","Dynamic Portrait","Portrait","06","02","07","04");
-        addSequence("S4","Smooth Documentary","Documentary","14","05","01","15");
-        addSequence("S5","Vertical Flow","Vertical","05","01","06","07");
+        // v1.0.7: Smooth Documentary is now Pan Up → Pan Down → Zoom In → Zoom Out.
+        // (The old S5 "Vertical Flow" was the same motion list and is dropped to avoid a duplicate.)
+        addSequence("S4","Smooth Documentary","Documentary","05","01","06","07");
     }
 
     private void add(String id,String name,String dir,float sx,float sy,float ss,float ex,float ey,float es){ formulas.add(new Formula(id,name,dir,new KeyframeState(sx,sy,ss,0,1),new KeyframeState(ex,ey,es,0,1))); }

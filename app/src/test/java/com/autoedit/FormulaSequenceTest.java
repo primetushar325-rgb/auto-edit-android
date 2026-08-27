@@ -24,7 +24,7 @@ public class FormulaSequenceTest {
     }
 
     @Test public void sequencesAreRegistered() {
-        assertEquals(5, e.sequences().size());
+        assertEquals(4, e.sequences().size());
         Formula s1 = seq("S1");
         assertTrue(s1.isSequence());
         assertEquals("Cinematic Travel", s1.name);
@@ -77,22 +77,16 @@ public class FormulaSequenceTest {
         assertEquals(0.12f, e.stateAt(f, 1f).x, 0.01f);
     }
 
-    @Test public void verticalFlowSequence() {
-        // 05 Pan Up, 01 Pan Down, 06 Zoom In, 07 Zoom Out
-        Formula f = seq("S5");
-        assertEquals(-0.10f, e.stateAt(f, 0.25f).y, 0.01f); // pan up end (y negative)
-        assertEquals(0.10f, e.stateAt(f, 0.5f).y, 0.01f);   // pan down end
-        assertEquals(1.14f, e.stateAt(f, 0.75f).scale, 0.01f);
-        assertEquals(1.0f, e.stateAt(f, 1f).scale, 0.01f);
-    }
-
     @Test public void smoothDocumentarySequence() {
+        // v1.0.7: S4 = 05 Pan Up, 01 Pan Down, 06 Zoom In, 07 Zoom Out
         Formula f = seq("S4");
-        // 14 Slow Push In, 05 Pan Up, 01 Pan Down, 15 Slow Pull Out
-        assertEquals(1.10f, e.stateAt(f, 0.25f).scale, 0.01f);
-        assertEquals(-0.10f, e.stateAt(f, 0.5f).y, 0.01f);
-        assertEquals(0.10f, e.stateAt(f, 0.75f).y, 0.01f);
-        assertEquals(1.02f, e.stateAt(f, 1f).scale, 0.01f);
+        assertEquals(8f, f.totalDurationSec(), 0.001f);
+        assertEquals(4, f.steps.size());
+        assertEquals(-0.10f, e.stateAt(f, 0.25f).y, 0.01f);  // pan up end (y negative)
+        assertEquals(0.10f, e.stateAt(f, 0.5f).y, 0.01f);    // pan down end
+        assertEquals(1.14f, e.stateAt(f, 0.75f).scale, 0.01f); // zoom in end
+        assertEquals(1.0f, e.stateAt(f, 1f).scale, 0.01f);  // zoom out end
+        assertEquals(0f, e.stateAt(f, 1f).y, 0.01f);
     }
 
     @Test public void backwardCompatibleClassicFormulas() {

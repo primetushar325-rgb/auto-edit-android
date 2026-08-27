@@ -190,7 +190,7 @@ public class MainActivity extends Activity {
         LinearLayout header = row();
         header.setGravity(Gravity.CENTER_VERTICAL);
         ImageView logo = new ImageView(this);
-        logo.setImageResource(getResources().getIdentifier("ic_auto_edit", "drawable", getPackageName()));
+        logo.setImageResource(R.drawable.logo_autoedit); // v1.0.7: user-provided AutoEdit logo
         header.addView(logo, new LinearLayout.LayoutParams(dp(58), dp(58)));
         LinearLayout titles = col();
         titles.addView(label("Auto-Edit", 30, AeDesign.TEXT, Typeface.BOLD));
@@ -825,12 +825,18 @@ public class MainActivity extends Activity {
         if (panelHost == null) return;
         panelHost.removeAllViews();
         panelHost.addView(label(title, 16, AeDesign.TEXT, Typeface.BOLD));
-        LinearLayout grid = rowWrap();
+        // v1.0.7: option rows swipe horizontally (same approach as the Formula
+        // card row) — previously a static wrap row that could not scroll.
+        LinearLayout grid = row();
         for (int i = 0; i < items.length; i++) {
             final Runnable r = actions[i];
             addAction(grid, items[i], () -> { r.run(); if (preview != null) preview.invalidate(); });
         }
-        panelHost.addView(grid);
+        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        hsv.setHorizontalScrollBarEnabled(false);
+        hsv.setFillViewport(true);
+        hsv.addView(grid);
+        panelHost.addView(hsv, new LinearLayout.LayoutParams(-1, -2));
     }
 
     // ---------------------------------------------------------------- operations (fast state ops — no rendering)
@@ -1505,7 +1511,7 @@ public class MainActivity extends Activity {
         showPanelIntoRoot("Playback", new String[]{"Preview quality: Optimized (sampled decode + LRU)", "Preview FPS: " + project.fps, "Audio in preview: ON (plays with Play)"});
         showPanelIntoRoot("Export", new String[]{"Resolution: " + project.width + "×" + project.height, "Pipeline: MediaCodec H.264 → MediaMuxer MP4 (protected)", "Audio export: COMING SOON (video-only)"});
         showPanelIntoRoot("Storage", new String[]{"Export location: Movies/AutoEdit", "Image cache: app cache dir (auto-cleaned)"});
-        showPanelIntoRoot("About", new String[]{"Auto-Edit v1.0.5", "Offline-first: media never leaves the device"});
+        showPanelIntoRoot("About", new String[]{"Auto-Edit v1.0.7", "Offline-first: media never leaves the device"});
     }
 
     // ---------------------------------------------------------------- helpers
