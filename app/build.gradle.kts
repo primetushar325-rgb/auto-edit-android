@@ -14,7 +14,7 @@ val hasReleaseSigning = !signingStoreFile.isNullOrBlank()
 android {
     namespace = "com.autoedit"
     compileSdk = 35
-    defaultConfig { applicationId = "com.autoedit"; minSdk = 26; targetSdk = 35; versionCode = 14; versionName = "1.5.1"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "com.autoedit"; minSdk = 26; targetSdk = 35; versionCode = 15; versionName = "1.6.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     signingConfigs {
         if (hasReleaseSigning) {
             create("release") {
@@ -37,4 +37,6 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     // androidx.core only for FileProvider (content:// URIs for ZIP share + APK install).
     implementation("androidx.core:core:1.13.1")
+    // AdMob interstitials shown before Export (MainActivity -> AdGate).
+    implementation("com.google.android.gms:play-services-ads:23.0.0")
 }

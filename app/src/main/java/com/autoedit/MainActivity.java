@@ -1908,7 +1908,10 @@ public class MainActivity extends Activity {
         root.addView(exportPercent);
         root.addView(exportStage);
         Button go = AeDesign.button(this, "EXPORT VIDEO", true);
-        AeDesign.press(go, () -> startExistingExport());
+        // AdGate runs the connectivity check + interstitial sequence, then calls
+        // the unchanged export entry point exactly once. startExistingExport()
+        // itself, and everything under export/, is untouched.
+        AeDesign.press(go, () -> new com.autoedit.ads.AdGate(this).start(MainActivity.this::startExistingExport));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(60));
         lp.setMargins(0, dp(18), 0, 0);
         root.addView(go, lp);

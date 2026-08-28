@@ -2,10 +2,7 @@
   "_comment": "Release automation config. minimumSupportedVersionCode: if omitted or 0, defaults to the new versionCode (fully mandatory). Set it LOWER than the new versionCode to allow older versions to keep working. releaseNotes: bullets shown on the update screen. You only edit THIS file and the versionCode/versionName in app/build.gradle.kts — the workflow generates version.json and the GitHub Release automatically.",
   "minimumSupportedVersionCode": 4,
   "releaseNotes": [
-    "FIXED: restored the nine category thumbnails (Eiffel Tower, Burj Khalifa, Taj Mahal and the rest) that v1.5.0 accidentally dropped",
-    "FIXED: restored saving extracted frames to Pictures/AutoEdit/Frames",
-    "FIXED: restored the Play Video fallback chooser",
-    "Kept from v1.5.0: export ring now animates smoothly, reopening the app resumes real export progress, and the frame extractor has pinch-to-zoom framing",
-    "104 unit tests passing"
+    "New: short ads before export",
+    "Export, audio, formula, motion, transition and frame extraction are unchanged"
   ]
 }
