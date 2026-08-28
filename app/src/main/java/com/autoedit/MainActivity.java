@@ -62,6 +62,13 @@ public class MainActivity extends Activity {
     private int transitionScopeClip = -1;
     private final Map<String, ToolTile> tiles = new HashMap<>();
 
+    // Bottom-sheet overlay (floats over the editor; never resizes the monitor)
+    private PanelSheet sheet;
+    private String selectedMotionId = null;
+    private String selectedFormulaId = null;
+    private EffectType selectedEffect = null;
+    private TransitionType selectedTransition = null;
+
     // --- export progress screen state (survives activity recreation; the
     //     service keeps exporting independently of the UI)
     private boolean exportRunning = false;
@@ -176,6 +183,7 @@ public class MainActivity extends Activity {
             else showEditor();
             return;
         }
+        if (sheet != null && sheet.isShowing()) { sheet.dismiss(); clearActiveTool(); return; }
         if ("editor".equals(screen)) showHome();
         else if ("create".equals(screen) || "export".equals(screen) || "settings".equals(screen)) showEditor();
         else if ("prompts".equals(screen)) showHome();
@@ -596,6 +604,77 @@ public class MainActivity extends Activity {
         for (Map.Entry<String, ToolTile> e : tiles.entrySet()) e.getValue().setActive(e.getKey().equals(tag));
     }
 
+    // ---------------------------------------------------------------- bottom sheet
+    private PanelSheet sheet() {
+        if (sheet == null) sheet = new PanelSheet(this);
+        return sheet;
+    }
+
+    /** Opens the floating bottom sheet (editor keeps its full size behind it). */
+    private void openSheet(String title) {
+        selectedMotionId = null; selectedFormulaId = null; selectedEffect = null; selectedTransition = null;
+        PanelSheet s = sheet();
+        s.setOnDismiss(() -> clearActiveTool());
+        s.show();
+        s.setTitle(title);
+    }
+
+    private LinearLayout sheetCardsRow(PanelSheet s) {
+        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        hsv.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = row();
+        hsv.addView(row, new FrameLayout.LayoutParams(-2, -2));
+        s.content().addView(hsv, new LinearLayout.LayoutParams(-1, -2));
+        return row;
+    }
+
+    private void sheetHint(PanelSheet s, String text) {
+        s.content().addView(label(text, 12, AeDesign.MUTED, Typeface.NORMAL));
+    }
+
+    /** A card with a live preview, title + subtitle; tap = SELECT only (no mutation). */
+    interface CardOnTap { void onTap(); }
+    private LinearLayout previewCard(View preview, String title, String subtitle, boolean selected) {
+        LinearLayout card = col();
+        card.setPadding(dp(8), dp(8), dp(8), dp(8));
+        card.addView(preview, new LinearLayout.LayoutParams(dp(112), dp(132)));
+        TextView nm = label(title, 12, AeDesign.TEXT, Typeface.BOLD);
+        nm.setGravity(Gravity.CENTER);
+        card.addView(nm, new LinearLayout.LayoutParams(-1, -2));
+        if (subtitle != null) {
+            TextView sub = label(subtitle, 10, AeDesign.MUTED, Typeface.NORMAL);
+            sub.setGravity(Gravity.CENTER);
+            card.addView(sub, new LinearLayout.LayoutParams(-1, -2));
+        }
+        card.setBackground(AeDesign.bg(AeDesign.SURFACE, dp(18), selected ? AeDesign.ACCENT : AeDesign.STROKE, selected ? 2 : 1));
+        return card;
+    }
+
+    private void addApplyButtons(PanelSheet s, String label, Runnable applySelected, Runnable applyAll) {
+        LinearLayout bar = row();
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        boolean hasSel = selected >= 0 && selected < project.clips.size();
+        if (hasSel) {
+            Button sel = AeDesign.button(this, label + " CLIP " + project.clips.get(selected).index, true);
+            AeDesign.press(sel, () -> { if (applySelected != null) { applySelected.run(); } });
+            bar.addView(sel, new LinearLayout.LayoutParams(0, dp(48), 1));
+        }
+        Button all = AeDesign.button(this, label + " ALL (" + project.clips.size() + ")", !hasSel);
+        AeDesign.press(all, () -> { if (applyAll != null) applyAll.run(); });
+        bar.addView(all, new LinearLayout.LayoutParams(hasSel ? 0 : -1, dp(48), hasSel ? 1 : 0));
+        s.applyBar().addView(bar, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    /** Close sheet after a successful apply and restore the normal editor. */
+    private void afterApply(String msg) {
+        if (preview != null) preview.invalidate();
+        if (sheet != null) sheet.dismiss();
+        clearActiveTool();
+        buildTimeline(false);
+        if (msg != null) toast(msg);
+    }
+
+
     private void clearActiveTool() {
         for (ToolTile t : tiles.values()) t.setActive(false);
     }
@@ -791,9 +870,41 @@ public class MainActivity extends Activity {
     private void motionPanel() {
         openTool("motion");
         String scope = selected >= 0 ? "Clip " + project.clips.get(selected).index : "ALL " + project.clips.size() + " clips";
-        showPanel("Motion → " + scope,
-                new String[]{"Zoom In", "Zoom Out", "Pan Left", "Pan Right", "Pan Up", "Pan Down", "Slow Push In", "No Motion"},
-                new Runnable[]{() -> applyFormula("06"), () -> applyFormula("07"), () -> applyFormula("02"), () -> applyFormula("04"), () -> applyFormula("05"), () -> applyFormula("01"), () -> applyFormula("14"), () -> applyFormula("00")});
+        PanelSheet s = sheet();
+        openSheet("Motion → " + scope);
+        java.util.List<Formula> motions = formulas.motions();
+
+        for (String cat : new String[]{MotionCatalog.CAT_BASIC, MotionCatalog.CAT_CINEMATIC, MotionCatalog.CAT_PREMIUM}) {
+            s.content().addView(label(cat, 13, AeDesign.MUTED, Typeface.BOLD));
+            LinearLayout row = sheetCardsRow(s);
+            for (Formula m : motions) {
+                if (!cat.equals(m.category)) continue;
+                MotionPreviewView mpv = new MotionPreviewView(this);
+                mpv.setMotion(formulas.byId(m.id));
+                boolean isSel = sameFormulaId(selected >= 0 && selected < project.clips.size() ? project.clips.get(selected).formula : null, m.id);
+                final String id = m.id;
+                LinearLayout card = previewCard(mpv, m.name, cat, isSel);
+                AeDesign.press(card, () -> {
+                    selectedMotionId = id;
+                    motionPanel(); // rebuild to show selection ring
+                });
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+                lp.setMargins(dp(4), dp(4), dp(4), dp(6));
+                row.addView(card, lp);
+            }
+        }
+        sheetHint(s, "Tap a card to SELECT (no change yet). Then choose APPLY. One clip plays ONE motion for its whole duration.");
+        addApplyButtons(s, "APPLY TO",
+                () -> { if (selectedMotionId != null) { applyFormula(selectedMotionId); afterApply("Motion applied to clip"); } else toast("Select a motion first"); },
+                () -> { if (selectedMotionId != null) { applyFormulaToAll(selectedMotionId); afterApply("Motion applied to all"); } else toast("Select a motion first"); });
+    }
+
+    private void applyFormulaToAll(String id) {
+        pushUndo();
+        Formula f = formulaById(id);
+        for (int i = 0; i < project.clips.size(); i++) project.clips.get(i).formula = f;
+        saveProject(true);
+        if (preview != null) preview.invalidate();
     }
 
     /**
@@ -804,31 +915,79 @@ public class MainActivity extends Activity {
      */
     private void formulaBatchPanel() {
         openTool("formula");
-        if (panelHost == null) return;
-        panelHost.removeAllViews();
-        String scope = selected >= 0 ? "selected clip" : "ALL clips";
-        panelHost.addView(label("Motion Formulas → " + scope + " (full sequence applied at once)", 15, AeDesign.TEXT, Typeface.BOLD));
-        HorizontalScrollView hsv = new HorizontalScrollView(this);
-        hsv.setHorizontalScrollBarEnabled(false);
-        LinearLayout cards = row();
-        addFormulaCard(cards, "00");
-        for (Formula s : formulas.sequences()) addFormulaCard(cards, s.id);
-        addFormulaCard(cards, "17");
-        addFormulaCard(cards, "06");
-        hsv.addView(cards);
-        panelHost.addView(hsv, new LinearLayout.LayoutParams(-1, -2));
-        panelHost.addView(label("Card previews loop the real sequence. Applying never touches the original media — only the clip's formula state (undo/redo safe).", 12, AeDesign.MUTED, Typeface.NORMAL));
+        String scope = selected >= 0 ? "Clip " + project.clips.get(selected).index : "ALL clips";
+        PanelSheet s = sheet();
+        openSheet("Formulas → " + scope);
 
-        // ---- custom formulas (user-created, stored in CustomFormulaStore) ----
-        panelHost.addView(label("Custom Formulas", 15, AeDesign.TEXT, Typeface.BOLD));
-        HorizontalScrollView chsv = new HorizontalScrollView(this);
-        chsv.setHorizontalScrollBarEnabled(false);
-        LinearLayout ccards = row();
-        addNewFormulaCard(ccards);
-        for (JSONObject o : CustomFormulaStore.all(this)) addCustomFormulaCard(ccards, o);
-        chsv.addView(ccards);
-        panelHost.addView(chsv, new LinearLayout.LayoutParams(-1, -2));
-        panelHost.addView(label("Custom formulas are rendered by the same FormulaEngine as built-ins — preview and export both use the saved keyframes.", 12, AeDesign.MUTED, Typeface.NORMAL));
+        // ---- built-in patterns (cap the row height; grouped) ----
+        s.content().addView(label("Formula patterns (clip i → step i % size)", 13, AeDesign.MUTED, Typeface.BOLD));
+        LinearLayout cards = sheetCardsRow(s);
+        addSheetFormulaCard(cards, "00");
+        for (Formula f : formulas.sequences()) addSheetFormulaCard(cards, f.id);
+
+        // ---- custom formulas ----
+        s.content().addView(label("Custom Formulas", 13, AeDesign.MUTED, Typeface.BOLD));
+        LinearLayout ccards = sheetCardsRow(s);
+        addSheetNewFormulaCard(ccards);
+        for (JSONObject o : CustomFormulaStore.all(this)) addSheetCustomFormulaCard(ccards, o);
+
+        sheetHint(s, "Tap a card to SELECT. Then APPLY — to the selected clip or to ALL. A pattern repeats one motion per clip (never multiple motions in one clip). Undo-safe.");
+        addApplyButtons(s, "APPLY FORMULA TO",
+                () -> { if (selectedFormulaId != null) { applyFormula(selectedFormulaId); afterApply("Formula applied to clip"); } else toast("Select a formula first"); },
+                () -> { if (selectedFormulaId != null) { applyFormulaToAll(selectedFormulaId); afterApply("Formula applied to all " + project.clips.size() + " clips"); } else toast("Select a formula first"); });
+    }
+
+    private boolean formulaApplied(String id) {
+        if (selected >= 0 && selected < project.clips.size()) return sameFormulaId(project.clips.get(selected).formula, id);
+        if (!project.clips.isEmpty()) {
+            for (TimelineClip c : project.clips) if (!sameFormulaId(c.formula, id)) return false;
+            return true;
+        }
+        return false;
+    }
+
+    private void addSheetFormulaCard(LinearLayout parent, String id) {
+        Formula f = formulas.byId(id);
+        FormulaPreviewView pv = new FormulaPreviewView(this);
+        pv.setFormula(f);
+        String sub = f.isPattern() ? f.category + " • " + f.patternSize() + "-clip" : "Single";
+        LinearLayout card = previewCard(pv, f.name, sub, formulaApplied(id));
+        AeDesign.press(card, () -> { selectedFormulaId = id; selectedMotionId = null; formulaBatchPanel(); });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMargins(dp(4), dp(4), dp(4), dp(6));
+        parent.addView(card, lp);
+    }
+
+    private void addSheetNewFormulaCard(LinearLayout parent) {
+        LinearLayout card = col();
+        card.setPadding(dp(8), dp(8), dp(8), dp(8));
+        ImageView plus = new ImageView(this);
+        plus.setImageResource(R.drawable.ic_add);
+        plus.setColorFilter(AeDesign.ACCENT);
+        plus.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        plus.setPadding(dp(30), dp(30), dp(30), dp(30));
+        card.addView(plus, new LinearLayout.LayoutParams(dp(112), dp(112)));
+        TextView nm = label("+ New", 12, AeDesign.TEXT, Typeface.BOLD); nm.setGravity(Gravity.CENTER);
+        card.addView(nm);
+        card.setBackground(AeDesign.bg(AeDesign.SURFACE, dp(18), AeDesign.STROKE, 1));
+        AeDesign.press(card, () -> { sheet.dismiss(); clearActiveTool(); openCustomFormulaLibrary(); });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMargins(dp(4), dp(4), dp(4), dp(6));
+        parent.addView(card, lp);
+    }
+
+    private void addSheetCustomFormulaCard(LinearLayout parent, JSONObject o) {
+        String id = o.optString("id");
+        String name = o.optString("name", "Custom");
+        int steps = o.optJSONArray("steps") != null ? o.optJSONArray("steps").length()
+                : (o.optJSONArray("keyframes") != null ? Math.max(1, o.optJSONArray("keyframes").length() - 1) : 1);
+        FormulaPreviewView pv = new FormulaPreviewView(this);
+        pv.setFormula(CustomFormulaStore.toFormula(o));
+        LinearLayout card = previewCard(pv, name, o.optString("category", "Custom") + " • " + steps + "-clip", formulaApplied(id));
+        AeDesign.press(card, () -> { selectedFormulaId = id; formulaBatchPanel(); });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMargins(dp(4), dp(4), dp(4), dp(6));
+        parent.addView(card, lp);
     }
 
     /** "+ New" card → opens the Custom Formula creator. */
@@ -966,21 +1125,46 @@ public class MainActivity extends Activity {
         openTool("transition");
         boolean junctionScoped = transitionScopeClip >= 0 && transitionScopeClip + 1 < project.clips.size();
         String scope;
-        if (junctionScoped) scope = "Clip " + (transitionScopeClip + 1) + " → " + (transitionScopeClip + 2);
+        if (junctionScoped) scope = "Junction clip " + (transitionScopeClip + 1) + " → " + (transitionScopeClip + 2);
         else scope = selected >= 0 ? "Clip " + project.clips.get(selected).index : "ALL clips";
+        PanelSheet s = sheet();
+        openSheet("Transition → " + scope);
+
+        TransitionType current = null;
+        if (junctionScoped) current = project.clips.get(transitionScopeClip).transition;
+        else if (selected >= 0) current = project.clips.get(selected).transition;
+
         TransitionType[] vals = TransitionEngine.rendered();
-        String[] n = new String[vals.length];
-        Runnable[] r = new Runnable[vals.length];
-        for (int i = 0; i < vals.length; i++) {
-            n[i] = TransitionEngine.label(vals[i]);
-            final TransitionType t = vals[i];
-            r[i] = () -> {
-                if (transitionScopeClip >= 0) applyTransitionAt(transitionScopeClip, t);
-                else applyTransition(t);
-                if (junctionScoped) transitionPanel(); // keep panel open, refresh scope line
-            };
+        LinearLayout row = sheetCardsRow(s);
+        for (TransitionType t : vals) {
+            TransitionPreviewView tpv = new TransitionPreviewView(this);
+            tpv.setTransition(t);
+            LinearLayout card = previewCard(tpv, TransitionEngine.label(t),
+                    t == TransitionType.NONE ? "No transition" : "Preview", current == t);
+            AeDesign.press(card, () -> { selectedTransition = t; transitionPanel(); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+            lp.setMargins(dp(4), dp(4), dp(4), dp(6));
+            row.addView(card, lp);
         }
-        showPanel("Transition → " + scope + (junctionScoped ? " (junction)" : "") + " • rendered in preview + export", n, r);
+        sheetHint(s, "Tap a card to SELECT, then APPLY. Every transition is rendered in preview AND export with shared math.");
+        if (junctionScoped) {
+            Button apply = AeDesign.button(this, "APPLY TO JUNCTION", true);
+            AeDesign.press(apply, () -> {
+                if (selectedTransition != null) { applyTransitionAt(transitionScopeClip, selectedTransition); afterApply("Transition set"); }
+            });
+            s.applyBar().addView(apply, new LinearLayout.LayoutParams(-1, dp(48)));
+        } else {
+            addApplyButtons(s, "APPLY TRANSITION TO",
+                    () -> { if (selectedTransition != null) { applyTransitionAt(selected, selectedTransition); afterApply("Transition set"); } },
+                    () -> { if (selectedTransition != null) { applyTransitionToAll(selectedTransition); afterApply("Transition applied to all"); } });
+        }
+    }
+
+    private void applyTransitionToAll(TransitionType t) {
+        pushUndo();
+        for (TimelineClip c : project.clips) c.transition = t;
+        saveProject(true);
+        if (preview != null) preview.invalidate();
     }
 
     private void textStudio() {
@@ -1023,23 +1207,71 @@ public class MainActivity extends Activity {
 
     private void filtersPanel() {
         openTool("filters");
-        showPanel("Filters → " + scopeLabel(),
-                new String[]{"Cinematic", "Warm", "Cool", "Vintage", "Film", "B&W", "Dramatic", "Portrait", "HDR-style"},
-                new Runnable[]{() -> applyEffect(EffectType.CINEMATIC), () -> applyEffect(EffectType.TEMPERATURE), () -> applyEffect(EffectType.SOFT_FOCUS), () -> applyEffect(EffectType.VINTAGE), () -> applyEffect(EffectType.FILM), () -> applyEffect(EffectType.BLACK_WHITE), () -> applyEffect(EffectType.CONTRAST), () -> applyEffect(EffectType.DREAM), () -> applyEffect(EffectType.SHARPEN)});
+        effectsSheet("Filters & Color", new EffectType[]{
+                EffectType.CINEMATIC, EffectType.TEMPERATURE, EffectType.SOFT_FOCUS, EffectType.VINTAGE,
+                EffectType.FILM, EffectType.BLACK_WHITE, EffectType.CONTRAST, EffectType.DREAM, EffectType.SHARPEN,
+                EffectType.SEPIA, EffectType.SATURATION, EffectType.EXPOSURE});
     }
 
     private void effectsPanel() {
         openTool("effects");
-        showPanel("Effects → " + scopeLabel(),
-                new String[]{"Glow", "Flash", "Vignette", "Blur", "Motion Blur", "Grain", "Vintage", "Cinematic", "Reset"},
-                new Runnable[]{() -> applyEffect(EffectType.GLOW), () -> applyTransition(TransitionType.FLASH), () -> applyEffect(EffectType.VIGNETTE), () -> applyEffect(EffectType.BLUR), () -> applyEffect(EffectType.MOTION_BLUR), () -> applyEffect(EffectType.FILM_GRAIN), () -> applyEffect(EffectType.VINTAGE), () -> applyEffect(EffectType.CINEMATIC), () -> applyEffect(EffectType.NONE)});
+        effectsSheet("Effects", new EffectType[]{
+                EffectType.NONE, EffectType.GLOW, EffectType.SOFT_GLOW, EffectType.BLOOM, EffectType.VIGNETTE,
+                EffectType.BLUR, EffectType.MOTION_BLUR, EffectType.FILM_GRAIN, EffectType.VINTAGE,
+                EffectType.CINEMATIC, EffectType.BRIGHTNESS, EffectType.CONTRAST, EffectType.SATURATION,
+                EffectType.TEMPERATURE, EffectType.EXPOSURE, EffectType.HIGHLIGHTS, EffectType.SHADOWS,
+                EffectType.FADE, EffectType.BLACK_WHITE, EffectType.SEPIA, EffectType.DREAM, EffectType.FILM,
+                EffectType.SOFT_FOCUS, EffectType.SHARPEN});
+    }
+
+    private void effectsSheet(String title, EffectType[] list) {
+        String scope = selected >= 0 ? "Clip " + project.clips.get(selected).index : "ALL clips";
+        PanelSheet s = sheet();
+        openSheet(title + " → " + scope);
+        EffectType current = selected >= 0 && selected < project.clips.size()
+                ? project.clips.get(selected).effect : null;
+        LinearLayout row = sheetCardsRow(s);
+        for (EffectType t : list) {
+            EffectPreviewView epv = new EffectPreviewView(this);
+            epv.setEffect(t, 0.7f);
+            LinearLayout card = previewCard(epv, EffectEngine.label(t),
+                    t == EffectType.NONE ? "Reset" : "Preview", current == t);
+            AeDesign.press(card, () -> { selectedEffect = t; effectsPanelOrRefresh(title); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+            lp.setMargins(dp(4), dp(4), dp(4), dp(6));
+            row.addView(card, lp);
+        }
+        sheetHint(s, "Tap a card to SELECT, then APPLY. Every effect has a real rendering path shared by preview and export.");
+        addApplyButtons(s, "APPLY EFFECT TO",
+                () -> { if (selectedEffect != null) { applyEffectTo(selected, selectedEffect); afterApply("Effect applied to clip"); } },
+                () -> { if (selectedEffect != null) { applyEffectToAll(selectedEffect); afterApply("Effect applied to all"); } });
+    }
+
+    private void effectsPanelOrRefresh(String title) {
+        if ("Effects".equals(title)) effectsPanel(); else filtersPanel();
+    }
+
+    private void applyEffectTo(int clipIdx, EffectType e) {
+        if (clipIdx < 0 || clipIdx >= project.clips.size()) return;
+        pushUndo();
+        project.clips.get(clipIdx).effect = e;
+        saveProject(true);
+        if (preview != null) preview.invalidate();
+    }
+
+    private void applyEffectToAll(EffectType e) {
+        pushUndo();
+        for (TimelineClip c : project.clips) c.effect = e;
+        saveProject(true);
+        if (preview != null) preview.invalidate();
     }
 
     private void adjustPanel() {
         openTool("adjust");
-        showPanel("Color Adjust → " + scopeLabel(),
-                new String[]{"Brightness", "Contrast", "Saturation", "Exposure", "Temperature", "Highlights", "Shadows", "Sharpen", "Reset"},
-                new Runnable[]{() -> applyEffect(EffectType.BRIGHTNESS), () -> applyEffect(EffectType.CONTRAST), () -> applyEffect(EffectType.SATURATION), () -> applyEffect(EffectType.EXPOSURE), () -> applyEffect(EffectType.TEMPERATURE), () -> applyEffect(EffectType.HIGHLIGHTS), () -> applyEffect(EffectType.SHADOWS), () -> applyEffect(EffectType.SHARPEN), () -> applyEffect(EffectType.NONE)});
+        effectsSheet("Color Adjust", new EffectType[]{
+                EffectType.NONE, EffectType.BRIGHTNESS, EffectType.CONTRAST, EffectType.SATURATION,
+                EffectType.EXPOSURE, EffectType.TEMPERATURE, EffectType.HIGHLIGHTS, EffectType.SHADOWS,
+                EffectType.SHARPEN});
     }
 
     private void autoEditPanel() {
