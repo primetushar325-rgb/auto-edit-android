@@ -1135,7 +1135,9 @@ public class MainActivity extends Activity {
     }
 
     private void effectsPanelOrRefresh(String title) {
-        if ("Effects".equals(title)) effectsPanel(); else filtersPanel();
+        if ("Effects".equals(title)) effectsPanel();
+        else if ("Color Adjust".equals(title)) adjustPanel();
+        else filtersPanel();
     }
 
     private void applyEffectTo(int clipIdx, EffectType e) {
@@ -1323,18 +1325,33 @@ public class MainActivity extends Activity {
         showClipPanel();
     }
 
+    /**
+     * Part 28: Auto Edit uses the SAME per-clip formula pattern engine. It
+     * assigns a built-in pattern so clip i resolves step (i % size) through
+     * stateForClip - never a separate motion implementation.
+     */
     private void autoEdit(int mode) {
         pushUndo();
+        String patternId; float dur; TransitionType trans; EffectType fx;
+        switch (mode) {
+            case 1:  patternId = "F01"; dur = 5f; trans = TransitionType.CROSS_DISSOLVE; fx = EffectType.CINEMATIC; break;
+            case 2:  patternId = "F06"; dur = 3f; trans = TransitionType.ZOOM;            fx = EffectType.VIGNETTE;  break;
+            case 3:  patternId = "F15"; dur = 4f; trans = TransitionType.FLASH;           fx = EffectType.SATURATION; break;
+            case 4:  patternId = "F03"; dur = 5f; trans = TransitionType.FADE;            fx = EffectType.CINEMATIC; break;
+            case 5:  patternId = "F07"; dur = 5f; trans = TransitionType.CROSS_DISSOLVE; fx = EffectType.NONE;      break;
+            default: patternId = "F05"; dur = 5f; trans = TransitionType.CROSS_DISSOLVE; fx = EffectType.DREAM;     break;
+        }
         for (int i = 0; i < project.clips.size(); i++) {
             TimelineClip c = project.clips.get(i);
-            c.setDurationSeconds(mode == 2 ? 3f : mode == 3 ? 4f : 5f);
-            c.formula = mode == 2 ? formulas.byId("16") : mode == 3 ? formulas.byId("14") : mode == 4 ? formulas.byId("17") : formulas.randomFor(i);
-            c.transition = TransitionType.CROSS_DISSOLVE;
-            c.effect = mode == 0 ? EffectType.SOFT_FOCUS : EffectType.CINEMATIC;
+            c.setDurationSeconds(dur);
+            c.formula = formulas.byId(patternId); // pattern resolves per clip via stateForClip
+            c.transition = trans;
+            c.effect = fx;
         }
         saveProject(true);
         buildTimeline(false);
-        toast("Auto Edit generated");
+        if (preview != null) preview.invalidate();
+        toast("Auto Edit → " + formulas.byId(patternId).name + " on " + project.clips.size() + " clips");
     }
 
     private void setPreset(ExportPreset p) {
