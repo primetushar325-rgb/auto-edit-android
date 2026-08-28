@@ -6,160 +6,130 @@ import java.util.ArrayList;
 import org.junit.Test;
 import static org.junit.Assert.*;
 
+/**
+ * CORE CONTRACT: a Formula is a REPEATING PER-CLIP MOTION PATTERN.
+ *   clip i -> step (i % patternLength); ONE clip = ONE primary motion lerped
+ *   start->end over that clip's whole duration. Never multiple motions/clip.
+ */
 public class FormulaSequenceTest {
     private final FormulaEngine e = new FormulaEngine();
 
-    private Formula seq(String id) { return e.byId(id); }
-
-    /** Helper: build an ad-hoc sequence from motion ids (2s steps each). */
-    private Formula buildSeq(String... motionIds) {
+    private Formula buildPattern(String... motionIds) {
         Formula f = new Formula("T", "test", "test", new KeyframeState(0, 0, 1f, 0, 1), new KeyframeState(0, 0, 1f, 0, 1));
         f.steps = new ArrayList<>();
-        float t = 0;
-        for (String mid : motionIds) {
-            f.steps.add(new FormulaStep(t, 2f, e.byId(mid)));
-            t += 2f;
-        }
+        for (String mid : motionIds) f.steps.add(new FormulaStep(e.byId(mid)));
         return f;
     }
 
-    @Test public void sequencesAreRegistered() {
-        assertEquals(4, e.sequences().size());
-        Formula s1 = seq("S1");
-        assertTrue(s1.isSequence());
-        assertEquals("Cinematic Travel", s1.name);
-        assertEquals(8f, s1.totalDurationSec(), 0.001f);
-        assertEquals(4, s1.steps.size());
+    @Test public void atLeastTwentyPatternFormulasRegistered() {
+        int count = 0;
+        for (Formula f : e.all()) if (f.isPattern()) count++;
+        assertTrue("expected >=20 pattern formulas, got " + count, count >= 20);
+        assertTrue(e.byId("F01").isPattern());
+        assertEquals("Cinematic Travel", e.byId("F01").name);
     }
 
-    @Test public void cinematicTravelAppliesStepsInOrder() {
-        // 0-2s Zoom In (06): 1.00 -> 1.14
-        // 2-4s Zoom Out (07): 1.14 -> 1.00
-        // 4-6s Pan Left (02): x +0.12 -> -0.12, scale 1.05
-        // 6-8s Pan Right (04): x -0.12 -> +0.12, scale 1.05
-        Formula f = seq("S1");
-        KeyframeState a = e.stateAt(f, 0f);
-        assertEquals(1.0f, a.scale, 0.01f);
-        assertEquals(0f, a.x, 0.01f);
-
-        KeyframeState b = e.stateAt(f, 0.25f); // end of step 1
-        assertEquals(1.14f, b.scale, 0.01f);
-
-        KeyframeState c = e.stateAt(f, 0.5f); // end of step 2
-        assertEquals(1.0f, c.scale, 0.01f);
-
-        KeyframeState d = e.stateAt(f, 0.75f); // end of step 3 (Pan Left end)
-        assertEquals(-0.12f, d.x, 0.01f);
-        assertEquals(1.05f, d.scale, 0.01f);
-
-        KeyframeState eState = e.stateAt(f, 1f); // end of step 4 (Pan Right end)
-        assertEquals(0.12f, eState.x, 0.01f);
-        assertEquals(1.05f, eState.scale, 0.01f);
+    @Test public void clipIndexWrapsModuloPatternLength() {
+        Formula f = buildPattern("06", "07", "02", "04");
+        for (int i = 0; i < 100; i++) {
+            KeyframeState st = e.stateForClip(f, i, 0.5f);
+            KeyframeState expected = e.stateForClip(f, i % 4, 0.5f);
+            assertEquals(expected.x, st.x, 1e-6f);
+            assertEquals(expected.y, st.y, 1e-6f);
+            assertEquals(expected.scale, st.scale, 1e-6f);
+            assertEquals(expected.rotation, st.rotation, 1e-6f);
+        }
     }
 
-    @Test public void storyFlowSequence() {
-        // 14 Slow Push In, 04 Pan Right, 15 Slow Pull Out (6s total)
-        Formula f = seq("S2");
-        assertEquals(6f, f.totalDurationSec(), 0.001f);
-        assertEquals(3, f.steps.size());
-        assertEquals(1.02f, e.stateAt(f, 0f).scale, 0.01f);
-        assertEquals(1.10f, e.stateAt(f, 1f / 3f).scale, 0.01f); // end push-in
-        assertEquals(0.12f, e.stateAt(f, 2f / 3f).x, 0.01f);   // end pan right
-        assertEquals(1.02f, e.stateAt(f, 1f).scale, 0.01f);     // end pull out
+    @Test public void oneClipOneMotion_startAndEndBelongToThatStep() {
+        Formula f = buildPattern("06", "07", "02", "04");
+        Formula m0 = e.motionForClip(f, 0);
+        assertEquals(m1id(e, f), e.motionForClip(f, 5).id); // 5 % 4 == 1
+        KeyframeState s0 = e.stateForClip(f, 0, 0f);
+        KeyframeState e0 = e.stateForClip(f, 0, 1f);
+        assertEquals(m0.start.scale, s0.scale, 1e-6f);
+        assertEquals(m0.end.scale,   e0.scale, 1e-6f);
+        Formula m2 = e.motionForClip(f, 2);
+        assertNotSame(m2.id, m0.id);
+        KeyframeState e2 = e.stateForClip(f, 2, 1f);
+        assertEquals(m2.end.x, e2.x, 1e-6f);
+        assertNotEquals(m0.end.scale, e2.scale, 0.005f);
     }
 
-    @Test public void dynamicPortraitSequence() {
-        Formula f = seq("S3");
-        // 06 -> 02 -> 07 -> 04
-        assertEquals(1.14f, e.stateAt(f, 0.25f).scale, 0.01f);
-        assertEquals(-0.12f, e.stateAt(f, 0.5f).x, 0.01f);
-        assertEquals(1.0f, e.stateAt(f, 0.75f).scale, 0.01f);
-        assertEquals(0.12f, e.stateAt(f, 1f).x, 0.01f);
+    private String m1id(FormulaEngine engine, Formula f) { return engine.motionForClip(f, 1).id; }
+
+    @Test public void motionSpansTheWholeClip() {
+        Formula f = buildPattern("06", "07");
+        KeyframeState a = e.stateForClip(f, 0, 0f);
+        KeyframeState b = e.stateForClip(f, 0, 0.5f);
+        KeyframeState c = e.stateForClip(f, 0, 1f);
+        assertTrue(a.scale < b.scale);
+        assertTrue(b.scale < c.scale);
     }
 
-    @Test public void smoothDocumentarySequence() {
-        // v1.0.7: S4 = 05 Pan Up, 01 Pan Down, 06 Zoom In, 07 Zoom Out
-        Formula f = seq("S4");
-        assertEquals(8f, f.totalDurationSec(), 0.001f);
-        assertEquals(4, f.steps.size());
-        assertEquals(-0.10f, e.stateAt(f, 0.25f).y, 0.01f);  // pan up end (y negative)
-        assertEquals(0.10f, e.stateAt(f, 0.5f).y, 0.01f);    // pan down end
-        assertEquals(1.14f, e.stateAt(f, 0.75f).scale, 0.01f); // zoom in end
-        assertEquals(1.0f, e.stateAt(f, 1f).scale, 0.01f);  // zoom out end
-        assertEquals(0f, e.stateAt(f, 1f).y, 0.01f);
+    @Test public void normalizedTimingIsClipRelative() {
+        Formula f = buildPattern("06");
+        KeyframeState k3 = e.stateForClip(f, 0, 0.5f);
+        KeyframeState k8 = e.stateForClip(f, 0, 0.5f);
+        assertEquals(k3.scale, k8.scale, 1e-6f);
+        f.steps.get(0).motionEndProgress = 0.4f;
+        f.steps.get(0).holdUntilProgress = 1.0f;
+        KeyframeState held = e.stateForClip(f, 0, 0.8f);
+        KeyframeState end = e.stateForClip(f, 0, 1f);
+        assertEquals(end.scale, held.scale, 1e-6f);
+        f.steps.get(0).motionStartProgress = 0.2f;
+        KeyframeState before = e.stateForClip(f, 0, 0.1f);
+        assertEquals(f.steps.get(0).motion.start.scale, before.scale, 1e-6f);
     }
 
-    @Test public void backwardCompatibleClassicFormulas() {
-        // classic single-motion behavior must be unchanged
-        Formula zi = seq("06");
-        assertFalse(zi.isSequence());
-        assertEquals(1f, zi.totalDurationSec(), 0.001f);
-        assertEquals(1.0f, e.stateAt(zi, 0f).scale, 0.001f);
-        assertEquals(1.14f, e.stateAt(zi, 1f).scale, 0.001f);
-        assertEquals(1.07f, e.stateAt(zi, 0.5f).scale, 0.02f);
-        assertNull(e.effectAt(zi, 0.5f)); // classic -> clip's own effect
-    }
-
-    @Test public void stepAtTimeAndClamping() {
-        Formula f = seq("S1");
-        assertEquals(0f, f.steps.indexOf(e.stepAtTime(f, 0f)), 0);
-        assertEquals(1f, f.steps.indexOf(e.stepAtTime(f, 2.5f)), 0);
-        assertEquals(2f, f.steps.indexOf(e.stepAtTime(f, 4.5f)), 0);
-        assertEquals(3f, f.steps.indexOf(e.stepAtTime(f, 7.9999f)), 0);
-        // clamped beyond total
-        assertNotNull(e.stepAtTime(f, 99f));
-        // null-safe
-        assertNull(e.stepAtTime(null, 1f));
-        assertNull(e.stepAtTime(seq("06"), 1f));
-    }
-
-    @Test public void stepTransitionMixAtBoundaries() {
-        Formula f = buildSeq("06", "07");
-        // default: no step transitions
-        assertEquals(0f, e.stepTransitionMix(f, 1.9f), 0.001f);
-        // set a transition at the end of step 1 (into step 2)
-        f.steps.get(0).transition = TransitionType.CROSS_DISSOLVE;
-        assertEquals(0f, e.stepTransitionMix(f, 1.0f), 0.001f);
-        assertTrue(e.stepTransitionMix(f, 1.85f) > 0f);
-        assertEquals(1f, e.stepTransitionMix(f, 2.0f), 0.001f);
-        assertEquals(0f, e.stepTransitionMix(f, 2.5f), 0.001f);
-        // next-step state is step 2's start (Zoom Out start = scale 1.14)
-        KeyframeState ns = e.nextStepStateAt(f, 1.9f);
-        assertEquals(1.14f, ns.scale, 0.01f);
-    }
-
-    @Test public void stepEffectOverride() {
-        Formula f = buildSeq("06", "07");
+    @Test public void perStepEffectAndTransitionResolve() {
+        Formula f = buildPattern("06", "07");
         f.steps.get(1).effect = EffectType.CINEMATIC;
         f.steps.get(1).effectIntensity = 0.9f;
-        assertNull(e.effectAt(f, 1f));          // step 1: none -> clip effect
-        assertEquals(EffectType.CINEMATIC, e.effectAt(f, 3f)); // step 2
-        assertEquals(0.6f, e.stepEffectIntensity(f, 1f, 0.6f), 0.001f); // clip intensity
-        assertEquals(0.9f, e.stepEffectIntensity(f, 3f, 0.6f), 0.001f); // step intensity
+        f.steps.get(0).transition = TransitionType.FADE;
+        assertNull(e.effectForClip(f, 0));
+        assertSame(EffectType.CINEMATIC, e.effectForClip(f, 1));
+        assertEquals(0.9f, e.effectIntensityForClip(f, 1, 0.6f), 0f);
+        assertEquals(0.6f, e.effectIntensityForClip(f, 0, 0.6f), 0f);
+        assertSame(TransitionType.FADE, e.transitionForClip(f, 0));
+        assertSame(TransitionType.NONE, e.transitionForClip(f, 1));
     }
 
-    @Test public void applyingSequenceReplacesAndNoneRemoves() {
-        // simulate: apply S1 to a clip, then replace with S3, then None
-        TimelineClip c = new TimelineClip("uri", 1, e.defaultFormula());
-        c.formula = seq("S1");
-        assertTrue(c.formula.isSequence());
-        c.formula = seq("S3");
-        assertEquals("S3", c.formula.id);
-        c.formula = seq("00"); // None
-        assertFalse(c.formula.isSequence());
-        // None is static: no motion over the whole clip
-        KeyframeState a = e.stateAt(c.formula, 0f);
-        KeyframeState b = e.stateAt(c.formula, 1f);
-        assertEquals(a.scale, b.scale, 0.0001f);
-        assertEquals(a.x, b.x, 0.0001f);
-        assertEquals(a.y, b.y, 0.0001f);
+    @Test public void classicSingleMotionAppliesToEveryClip() {
+        Formula zi = e.byId("06");
+        assertFalse(zi.isPattern());
+        for (int i = 0; i < 5; i++) {
+            assertEquals(1.04f, e.stateForClip(zi, i, 0f).scale, 0.01f);
+            assertEquals(1.16f, e.stateForClip(zi, i, 1f).scale, 0.01f);
+        }
+        assertNull(e.effectForClip(zi, 0));
     }
 
-    @Test public void sequenceClonesAreIndependent() {
-        Formula a = seq("S1");
-        Formula b = seq("S1");
+    @Test public void noneFormulaIsStaticEveryClip() {
+        Formula none = e.byId("00");
+        for (int i = 0; i < 6; i++) {
+            KeyframeState a = e.stateForClip(none, i, 0f);
+            KeyframeState b = e.stateForClip(none, i, 1f);
+            assertEquals(a.scale, b.scale, 1e-6f);
+            assertEquals(a.x, b.x, 1e-6f);
+            assertEquals(a.y, b.y, 1e-6f);
+        }
+    }
+
+    @Test public void clonesAreIndependent() {
+        Formula a = e.byId("F01");
+        Formula b = e.byId("F01");
         a.steps.get(0).transition = TransitionType.ZOOM;
-        assertNotSame(a.steps, b.steps);
         assertEquals(TransitionType.NONE, b.steps.get(0).transition);
+    }
+
+    @Test public void applyingPatternReplacesAndNoneRemoves() {
+        TimelineClip c = new TimelineClip("uri", 1, e.defaultFormula());
+        c.formula = e.byId("F01");
+        assertTrue(c.formula.isPattern());
+        c.formula = e.byId("F03");
+        assertEquals("F03", c.formula.id);
+        c.formula = e.byId("00");
+        assertFalse(c.formula.isPattern());
     }
 }

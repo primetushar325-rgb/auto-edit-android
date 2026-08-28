@@ -4,7 +4,6 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
-import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
@@ -16,63 +15,39 @@ import com.autoedit.model.Formula;
 import com.autoedit.model.KeyframeState;
 
 /**
- * Lightweight looping Formula sequence preview for the formula cards.
- *
- * Implementation: one small decoded bitmap + transformation matrix
- * (scale / translation / rotation / alpha) driven by the SAME FormulaEngine
- * math that the editor preview and export use — so the card animation is
- * exactly the motion the formula will apply. No video, no textures, no
- * per-frame allocations beyond a couple of floats.
- *
- * Performance: runs at ~20fps only while visible; pauses when the card is
- * off-viewport / the list is not shown.
+ * Lightweight looping preview for formula/motion cards. PATTERN formulas cycle
+ * virtual CLIPS: clip k runs pattern step (k % size) and inside that clip ONE
+ * motion is interpolated start->end. Never more than one motion per clip.
  */
 public class FormulaPreviewView extends View {
-    private static final long FRAME_MS = 50; // 20 fps — plenty for a card preview
-
+    private static final long FRAME_MS = 50;
+    private static final float PER_CLIP_SEC = 1.1f;
     private static Bitmap sharedBitmap;
     private static int sharedW, sharedH;
-
     private final FormulaEngine engine = new FormulaEngine();
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-    private final Matrix matrix = new Matrix();
     private final RectF dst = new RectF();
     private final RectF bounds = new RectF();
-
+    private final Paint dotPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private Formula formula;
     private long startMs;
 
-    public FormulaPreviewView(Context c) {
-        super(c);
-        startMs = SystemClock.elapsedRealtime();
-    }
+    public FormulaPreviewView(Context c) { super(c); startMs = SystemClock.elapsedRealtime(); }
 
-    public void setFormula(Formula f) {
-        formula = f;
-        startMs = SystemClock.elapsedRealtime();
-        invalidate();
-    }
-
-    public void stopLooping() { clearFrameCallbacks(); invalidate(); }
-
-    private void clearFrameCallbacks() { removeCallbacks(invalidator); }
+    public void setFormula(Formula f) { formula = f; startMs = SystemClock.elapsedRealtime(); invalidate(); }
+    public void stopLooping() { removeCallbacks(invalidator); invalidate(); }
     private final Runnable invalidator = this::postInvalidateDelayedFrame;
-
     private void postInvalidateDelayedFrame() {
-        if (formula != null && isShown()) {
-            postDelayed(new Runnable() { public void run() { postInvalidate(); } }, FRAME_MS);
-        }
+        if (formula != null && isShown()) postDelayed(() -> { if (isShown()) postInvalidate(); }, FRAME_MS);
     }
-
-    @Override
-    protected void onVisibilityChanged(View changedView, int visibility) {
+    @Override protected void onVisibilityChanged(View changedView, int visibility) {
         super.onVisibilityChanged(changedView, visibility);
-        clearFrameCallbacks();
+        removeCallbacks(invalidator);
         if (formula != null && visibility == VISIBLE) postInvalidateDelayedFrame();
     }
+    @Override protected void onDetachedFromWindow() { super.onDetachedFromWindow(); removeCallbacks(invalidator); }
 
-    @Override
-    protected void onDraw(Canvas canvas) {
+    @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         int w = getWidth(), h = getHeight();
         if (w < 10 || h < 10) return;
@@ -83,34 +58,43 @@ public class FormulaPreviewView extends View {
             canvas.drawRoundRect(bounds, 14, 14, paint);
             return;
         }
-        // loop position: classic formulas loop in ~4s, sequences use their own duration
-        float loopSec = formula.isSequence() ? Math.max(4f, formula.totalDurationSec()) : 4f;
-        float t = ((SystemClock.elapsedRealtime() - startMs) % (long) (loopSec * 1000)) / (loopSec * 1000f);
-        KeyframeState st = engine.stateAt(formula, t);
+        int pattern = formula.isPattern() ? formula.patternSize() : 1;
+        float loopSec = pattern * PER_CLIP_SEC;
+        float tSec = ((SystemClock.elapsedRealtime() - startMs) % (long) (loopSec * 1000)) / 1000f;
+        int virtualClip = Math.min(pattern - 1, (int) (tSec / PER_CLIP_SEC));
+        float p = (tSec - virtualClip * PER_CLIP_SEC) / PER_CLIP_SEC;
+        if (p > 1f) p = 1f;
+        KeyframeState st = engine.stateForClip(formula, virtualClip, p);
 
-        // rounded clip
         Path clip = new Path();
         clip.addRoundRect(0, 0, w, h, 14, 14, Path.Direction.CW);
         canvas.save();
         canvas.clipPath(clip);
+        paint.setColor(AeDesign.SURFACE_2);
+        paint.setAlpha(255);
+        canvas.drawRoundRect(new RectF(0, 0, w, h), 14, 14, paint);
 
-        // base: cover the card
         float base = Math.max(w / (float) bmp.getWidth(), h / (float) bmp.getHeight());
         float scale = base * st.scale;
         float dw = bmp.getWidth() * scale, dh = bmp.getHeight() * scale;
         float cx = w / 2f + st.x * w, cy = h / 2f + st.y * h;
         dst.set(cx - dw / 2, cy - dh / 2, cx + dw / 2, cy + dh / 2);
-
         paint.setAlpha((int) (255 * Math.max(0f, Math.min(1f, st.opacity))));
-        if (Math.abs(st.rotation) > 0.001f) {
-            canvas.save();
-            canvas.rotate(st.rotation, w / 2f, h / 2f);
-            canvas.drawBitmap(bmp, null, dst, paint);
-            canvas.restore();
-        } else {
-            canvas.drawBitmap(bmp, null, dst, paint);
-        }
+        canvas.save();
+        if (Math.abs(st.rotation) > 0.001f) canvas.rotate(st.rotation, w / 2f, h / 2f);
+        canvas.drawBitmap(bmp, null, dst, paint);
         canvas.restore();
+        canvas.restore();
+
+        if (formula.isPattern() && pattern > 1) {
+            float r = 2.5f, gap = 7f;
+            float total = pattern * gap - (gap - 2 * r);
+            float startX = w / 2f - total / 2f + r;
+            for (int i = 0; i < pattern; i++) {
+                dotPaint.setColor(i == virtualClip ? AeDesign.ACCENT : 0x55ffffff);
+                canvas.drawCircle(startX + i * gap, h - 8, r, dotPaint);
+            }
+        }
         postInvalidateDelayedFrame();
     }
 
@@ -127,8 +111,7 @@ public class FormulaPreviewView extends View {
             b = s;
         }
         if (sharedBitmap != null && !sharedBitmap.isRecycled()) sharedBitmap.recycle();
-        sharedBitmap = b;
-        sharedW = tw; sharedH = th;
+        sharedBitmap = b; sharedW = tw; sharedH = th;
         return b;
     }
 }

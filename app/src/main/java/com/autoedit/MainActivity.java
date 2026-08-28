@@ -934,7 +934,7 @@ public class MainActivity extends Activity {
         name.setGravity(Gravity.CENTER);
         card.addView(name, new LinearLayout.LayoutParams(-1, -2));
         String sub = f.isSequence()
-                ? f.category + " • " + Math.round(f.totalDurationSec()) + "s • " + f.steps.size() + " steps"
+                ? f.category + " • " + f.steps.size() + "-clip pattern"
                 : "Single motion";
         TextView cat = label(sub, 10, AeDesign.MUTED, Typeface.NORMAL);
         cat.setGravity(Gravity.CENTER);

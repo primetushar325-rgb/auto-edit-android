@@ -7,17 +7,13 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 /**
- * Validates the Custom Formula keyframe → step conversion that
- * CustomFormulaStore.toFormula performs (mirrored here in pure Java so the
- * logic runs on the JVM). A custom formula stores N keyframes; the store
- * builds N-1 steps whose motion keyframes are exactly the adjacent keyframe
- * states, and FormulaEngine.stateAt interpolates between them with the
- * chosen easing. This is the exact path used by editor preview and export.
+ * Custom formulas (from CustomFormulaStore.toFormula) are per-clip patterns:
+ * each adjacent keyframe pair becomes ONE step = one clip's motion.
+ * FormulaEngine.stateForClip interpolates that clip's motion start->end.
  */
 public class CustomFormulaInterpolationTest {
     private final FormulaEngine e = new FormulaEngine();
 
-    /** Mirrors CustomFormulaStore.toFormula: keyframes → Formula sequence. */
     private Formula buildFromKeyframes(KeyframeState[] kfs, Easing[] easings, float[] times) {
         Formula f = new Formula("Ctest", "Custom", "Custom",
                 new KeyframeState(0, 0, 1f, 0, 1), new KeyframeState(0, 0, 1f, 0, 1));
@@ -33,115 +29,93 @@ public class CustomFormulaInterpolationTest {
         return f;
     }
 
-    @Test public void keyframesBecomeSteps_withCorrectDurations() {
+    @Test public void keyframesBecomeSteps_onePerClip() {
         KeyframeState[] kfs = {
                 new KeyframeState(0, 0, 1.0f, 0, 1),
                 new KeyframeState(0, 0, 1.3f, 0, 1),
-                new KeyframeState(50 / 100f, 0, 1.0f, 0, 1),
+                new KeyframeState(0.5f, 0, 1.0f, 0, 1),
                 new KeyframeState(0, 0, 1.14f, 0, 1),
         };
         Easing[] es = {Easing.EASE_IN_OUT, Easing.LINEAR, Easing.EASE_OUT};
         float[] times = {0f, 2f, 4f, 6f};
         Formula f = buildFromKeyframes(kfs, es, times);
-
-        assertTrue(f.isSequence());
-        assertEquals(3, f.steps.size());
-        assertEquals(2f, f.steps.get(0).durationSec, 0.001f);
-        assertEquals(6f, f.totalDurationSec(), 0.001f);
-        // chronological windows
-        for (int i = 1; i < f.steps.size(); i++) {
-            assertTrue(f.steps.get(i).startSec >= f.steps.get(i - 1).endSec() - 0.001f);
-        }
+        assertTrue(f.isPattern());
+        assertEquals(3, f.patternSize());
+        assertEquals(e.motionForClip(f, 0).id, e.motionForClip(f, 3).id);
     }
 
-    @Test public void interpolatesSmoothly_scaleZoom1to1_3() {
+    @Test public void clipMotionInterpolatesStartToEnd() {
         KeyframeState[] kfs = {
                 new KeyframeState(0, 0, 1.0f, 0, 1),
                 new KeyframeState(0, 0, 1.3f, 0, 1),
         };
-        Easing[] es = {Easing.LINEAR};
-        float[] times = {0f, 2f};
-        Formula f = buildFromKeyframes(kfs, es, times);
-
-        KeyframeState start = e.stateAt(f, 0f);
-        KeyframeState mid = e.stateAt(f, 0.5f);
-        KeyframeState end = e.stateAt(f, 1f);
+        Formula f = buildFromKeyframes(kfs, new Easing[]{Easing.LINEAR}, new float[]{0f, 2f});
+        KeyframeState start = e.stateForClip(f, 0, 0f);
+        KeyframeState mid = e.stateForClip(f, 0, 0.5f);
+        KeyframeState end = e.stateForClip(f, 0, 1f);
         assertEquals(1.0f, start.scale, 0.001f);
-        assertEquals(1.15f, mid.scale, 0.001f);   // exact midpoint lerp
+        assertEquals(1.15f, mid.scale, 0.001f);
         assertEquals(1.3f, end.scale, 0.001f);
+        assertEquals(end.scale, e.stateForClip(f, 1, 1f).scale, 1e-6f);
     }
 
-    @Test public void interpolatesPan_andEases() {
+    @Test public void easingAppliedWithinClip() {
         KeyframeState[] kfs = {
                 new KeyframeState(0, 0, 1f, 0, 1),
                 new KeyframeState(0.4f, 0, 1f, 0, 1),
         };
-        Easing[] es = {Easing.EASE_OUT};
-        float[] times = {0f, 4f};
-        Formula f = buildFromKeyframes(kfs, es, times);
-
-        KeyframeState mid = e.stateAt(f, 0.5f); // progress 0.5 → eased 0.75
+        Formula f = buildFromKeyframes(kfs, new Easing[]{Easing.EASE_OUT}, new float[]{0f, 4f});
+        KeyframeState mid = e.stateForClip(f, 0, 0.5f);
         assertEquals(0.3f, mid.x, 0.001f);
-        // EASE_OUT at t=0.5 → 1-(1-.5)^2 = 0.75 → x = 0.4*0.75 = 0.3
     }
 
-    @Test public void noJumpingBetweenKeyframes_stateIsContinuous() {
+    @Test public void noJumpingWithinAClip_stateIsContinuous() {
         KeyframeState[] kfs = {
                 new KeyframeState(0, 0, 1.0f, 0, 1),
                 new KeyframeState(0, 0, 1.3f, 0, 1),
                 new KeyframeState(-0.3f, 0.1f, 0.9f, 5f, 0.7f),
                 new KeyframeState(0.2f, -0.2f, 1.2f, 0, 1),
         };
-        Easing[] es = {Easing.EASE_IN_OUT, Easing.EASE_IN_OUT, Easing.EASE_IN_OUT};
-        float[] times = {0f, 2f, 4f, 6f};
-        Formula f = buildFromKeyframes(kfs, es, times);
-
-        // sample densely across the whole sequence — consecutive samples must
-        // move in small steps per parameter (no teleporting between keyframes)
-        KeyframeState prev = e.stateAt(f, 0f);
+        Formula f = buildFromKeyframes(kfs,
+                new Easing[]{Easing.EASE_IN_OUT, Easing.EASE_IN_OUT, Easing.EASE_IN_OUT},
+                new float[]{0f, 2f, 4f, 6f});
+        KeyframeState prev = e.stateForClip(f, 0, 0f);
         for (int i = 1; i <= 200; i++) {
-            KeyframeState s = e.stateAt(f, i / 200f);
-            float dScale = Math.abs(s.scale - prev.scale);
-            float dX = Math.abs(s.x - prev.x);
-            float dY = Math.abs(s.y - prev.y);
-            float dRot = Math.abs(s.rotation - prev.rotation);
-            float dOp = Math.abs(s.opacity - prev.opacity);
-            assertTrue("step " + i + " scale jumped by " + dScale, dScale < 0.05f);
-            assertTrue("step " + i + " panX jumped by " + dX, dX < 0.05f);
-            assertTrue("step " + i + " panY jumped by " + dY, dY < 0.05f);
-            assertTrue("step " + i + " rotation jumped by " + dRot, dRot < 0.16f);
-            assertTrue("step " + i + " opacity jumped by " + dOp, dOp < 0.05f);
+            KeyframeState s = e.stateForClip(f, 0, i / 200f);
+            assertTrue("scale jumped " + Math.abs(s.scale - prev.scale), Math.abs(s.scale - prev.scale) < 0.05f);
+            assertTrue("x jumped", Math.abs(s.x - prev.x) < 0.05f);
+            assertTrue("y jumped", Math.abs(s.y - prev.y) < 0.05f);
+            assertTrue("rotation jumped", Math.abs(s.rotation - prev.rotation) < 0.16f);
+            assertTrue("opacity jumped", Math.abs(s.opacity - prev.opacity) < 0.05f);
             prev = s;
         }
-        // boundaries land exactly on the keyframe states
-        KeyframeState at2 = e.stateAt(f, 2f / 6f);
-        assertEquals(1.3f, at2.scale, 0.001f);
-        assertEquals(0f, at2.x, 0.001f);
+        assertEquals(1.3f, e.stateForClip(f, 0, 1f).scale, 0.001f);
+        assertEquals(0.2f, e.stateForClip(f, 2, 1f).x, 0.001f);
     }
 
-    @Test public void transitionAndEffectMetaSurviveOnSteps() {
+    @Test public void effectAndTransitionMetaSurviveOnSteps() {
         KeyframeState[] kfs = {
                 new KeyframeState(0, 0, 1f, 0, 1),
                 new KeyframeState(0, 0, 1.2f, 0, 1),
                 new KeyframeState(0, 0, 1f, 0, 1),
         };
-        Easing[] es = {Easing.EASE_IN_OUT, Easing.EASE_IN_OUT};
-        float[] times = {0f, 2f, 4f};
-        Formula f = buildFromKeyframes(kfs, es, times);
-
+        Formula f = buildFromKeyframes(kfs,
+                new Easing[]{Easing.EASE_IN_OUT, Easing.EASE_IN_OUT}, new float[]{0f, 2f, 4f});
         f.steps.get(0).transition = TransitionType.CROSS_DISSOLVE;
         f.steps.get(0).effect = EffectType.GLOW;
-        assertSame(TransitionType.CROSS_DISSOLVE, e.stepTransitionAt(f, 1f));
-        assertSame(EffectType.GLOW, e.effectAt(f, 1f));
-        assertSame(TransitionType.NONE, e.stepTransitionAt(f, 3f));
+        assertSame(TransitionType.CROSS_DISSOLVE, e.transitionForClip(f, 0));
+        assertSame(EffectType.GLOW, e.effectForClip(f, 0));
+        assertNull(e.effectForClip(f, 1));
+        assertSame(TransitionType.NONE, e.transitionForClip(f, 1));
+        assertSame(TransitionType.CROSS_DISSOLVE, e.transitionForClip(f, 2));
+        assertSame(TransitionType.NONE, e.transitionForClip(f, 3));
     }
 
-    @Test public void oldSingleMotionFormulasStillWork() {
-        Formula classic = e.byId("06"); // Zoom In
-        assertFalse(classic.isSequence());
-        KeyframeState mid = e.stateAt(classic, 0.5f);
-        assertEquals(1.07f, mid.scale, 0.01f);
-        KeyframeState end = e.stateAt(classic, 1f);
-        assertEquals(1.14f, end.scale, 0.01f);
+    @Test public void classicSingleMotionStillWorks() {
+        Formula classic = e.byId("06");
+        assertFalse(classic.isPattern());
+        assertEquals(1.04f, e.stateForClip(classic, 0, 0f).scale, 0.01f);
+        assertEquals(1.10f, e.stateForClip(classic, 0, 0.5f).scale, 0.02f);
+        assertEquals(1.16f, e.stateForClip(classic, 0, 1f).scale, 0.01f);
     }
 }
