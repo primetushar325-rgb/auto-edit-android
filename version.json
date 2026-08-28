@@ -1,10 +1,10 @@
 {
-  "latestVersionCode": 15,
-  "latestVersionName": "1.6.0",
+  "latestVersionCode": 16,
+  "latestVersionName": "1.6.1",
   "minimumSupportedVersionCode": 4,
   "downloadUrl": "https://github.com/primetushar325-rgb/auto-edit-android/releases/latest/download/AutoEdit-latest.apk",
   "releaseNotes": [
-    "New: short ads before export",
-    "Export, audio, formula, motion, transition and frame extraction are unchanged"
+    "Fixed a crash when previewing large or 4K videos in the frame extractor",
+    "Permissions are now asked once, up front, instead of interrupting you mid-task"
   ]
 }
