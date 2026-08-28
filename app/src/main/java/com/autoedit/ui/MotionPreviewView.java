@@ -12,7 +12,4 @@ public class MotionPreviewView extends FormulaPreviewView {
     public MotionPreviewView(Context c) { super(c); }
 
     public void setMotion(Formula motion) { setFormula(motion); }
-
-    /** Motion cards use the Burj Khalifa / Dubai cinematic reference (spec §8). */
-    @Override protected int sceneRes() { return com.autoedit.R.drawable.card_motion_burjkhalifa; }
 }

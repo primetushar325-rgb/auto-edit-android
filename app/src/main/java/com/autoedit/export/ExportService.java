@@ -34,6 +34,24 @@ public class ExportService extends Service {
     public static final String ACTION_START = "com.autoedit.START_EXPORT";
     public static final String ACTION_CANCEL = "com.autoedit.CANCEL_EXPORT";
     public static final String ACTION_PROGRESS = "com.autoedit.PROGRESS";
+    /** Asks a live export to re-broadcast its current state (spec §3). */
+    public static final String ACTION_QUERY = "com.autoedit.QUERY_EXPORT";
+
+    /**
+     * Live snapshot of the running export, so a UI that was closed and reopened
+     * (or a fresh MainActivity after the process was recreated) can resume
+     * showing the real progress instead of assuming nothing is happening.
+     *
+     * A foreground service outlives the activity, so {@code exportRunning} in
+     * the activity is NOT a reliable source of truth on its own.
+     */
+    public static volatile boolean sRunning = false;
+    private static volatile int sPercent = 0;
+    private static volatile String sStage = ExportStage.PREPARING.name();
+    private static volatile long sFrame = 0;
+    private static volatile long sTotal = 0;
+    private static volatile int sClip = 0;
+    private static volatile String sMessage = "";
 
     public static final String EXTRA_PERCENT = "percent";
     public static final String EXTRA_STAGE = "stage";
@@ -99,10 +117,23 @@ public class ExportService extends Service {
             cancelled = true;
             return START_NOT_STICKY;
         }
+        if (intent != null && ACTION_QUERY.equals(intent.getAction())) {
+            // Nothing running -> say so explicitly, so the UI can stop waiting
+            // rather than sitting on a stale progress screen.
+            if (running) {
+                sendProgress(sPercent, ExportStage.valueOf(sStage), sFrame, sTotal, sClip,
+                        sMessage, null, null, false);
+            } else {
+                sendIdleReply();
+            }
+            return START_NOT_STICKY;
+        }
         if (intent != null && ACTION_START.equals(intent.getAction())) {
             if (running) return START_NOT_STICKY; // never two exports at once
             cancelled = false;
             running = true;
+            sRunning = true;
+            sPercent = 0; sStage = ExportStage.PREPARING.name(); sMessage = "Preparing...";
             startForeground(NOTIF_ID, notification(0, "Preparing..."));
             int w = intent.getIntExtra("w", 1920), h = intent.getIntExtra("h", 1080);
             int fps = intent.getIntExtra("fps", 30);
@@ -172,6 +203,7 @@ public class ExportService extends Service {
                     wasCancel ? "Export cancelled" : categorize(e), null, null, false);
         } finally {
             running = false;
+            sRunning = false;
             stopForeground(true);
             stopSelf();
         }
@@ -281,8 +313,29 @@ public class ExportService extends Service {
     /** Last percent pushed to the notification, so it is not updated per frame. */
     private int lastNotifPercent = -1;
 
+    /**
+     * Reply to {@link #ACTION_QUERY} when no export is in flight.
+     *
+     * Percent {@code -3} means "idle" - distinct from {@code -1} (failed) and
+     * {@code -2} (cancelled) so the UI can clear a stale progress screen instead
+     * of showing an error for an export that already finished cleanly.
+     */
+    private void sendIdleReply() {
+        Intent i = new Intent(ACTION_PROGRESS);
+        i.setPackage(getPackageName());
+        i.putExtra(EXTRA_PERCENT, -3);
+        i.putExtra(EXTRA_STAGE, ExportStage.PREPARING.name());
+        i.putExtra(EXTRA_MESSAGE, "");
+        sendBroadcast(i);
+    }
+
     private void sendProgress(int percent, ExportStage stage, long frame, long total, int clip,
                               String message, Uri uri, String displayName, boolean hasAudio) {
+        // Keep the snapshot current so a reopened UI resumes from real numbers.
+        if (stage != null) sStage = stage.name();
+        sPercent = percent; sFrame = frame; sTotal = total; sClip = clip;
+        sMessage = message == null ? "" : message;
+
         // Mirror the real progress into the foreground notification. Only whole
         // percents are worth a notify() call.
         if (running && percent >= 0 && percent != lastNotifPercent) {

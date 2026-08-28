@@ -79,6 +79,70 @@ public final class FrameUtils {
      * (gradient magnitude on a downsampled copy) — a real local heuristic,
      * no ML, no distortion.
      */
+    /**
+     * Crops {@code src} to the region the user framed with pinch-zoom and drag
+     * in the preview (spec §9, §10).
+     *
+     * <p>{@code zoom} is the preview magnification (1 = whole frame) and
+     * {@code panX}/{@code panY} are normalised offsets in [-1, 1] where -1 means
+     * pushed fully to the left/top edge and +1 fully to the right/bottom. The
+     * crop window is clamped to the source, so panning can never expose empty
+     * space - which is what lets the user deliberately push part of a 16:9 video
+     * outside the frame and still get a full frame out.
+     *
+     * <p>Pure arithmetic over pixel bounds, so it is unit-testable without a
+     * device. Applied BEFORE {@link #fitToAspect} so the existing aspect/crop
+     * pipeline is untouched: preview and extraction share this one transform,
+     * which is what makes the saved frame match what the user saw.
+     *
+     * @return the cropped bitmap, or {@code src} itself when zoom is 1
+     */
+    public static Bitmap cropZoomPan(Bitmap src, float zoom, float panX, float panY) {
+        if (src == null) return null;
+        float z = zoom < 1f ? 1f : (zoom > 8f ? 8f : zoom);
+        if (z <= 1.0001f) return src;
+
+        int sw = src.getWidth(), sh = src.getHeight();
+        int cw = Math.max(1, Math.round(sw / z));
+        int ch = Math.max(1, Math.round(sh / z));
+
+        // Travel available on each axis, then map the normalised pan onto it.
+        float travelX = sw - cw, travelY = sh - ch;
+        float px = panX < -1f ? -1f : (panX > 1f ? 1f : panX);
+        float py = panY < -1f ? -1f : (panY > 1f ? 1f : panY);
+        int x = Math.round((px + 1f) * 0.5f * travelX);
+        int y = Math.round((py + 1f) * 0.5f * travelY);
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        if (x + cw > sw) x = sw - cw;
+        if (y + ch > sh) y = sh - ch;
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+
+        Bitmap out = Bitmap.createBitmap(src, x, y, cw, ch);
+        if (out != src && out != null) src.recycle();
+        return out;
+    }
+
+    /** The crop rect {@link #cropZoomPan} would take, as {x, y, w, h}. */
+    public static int[] zoomPanRect(int sw, int sh, float zoom, float panX, float panY) {
+        float z = zoom < 1f ? 1f : (zoom > 8f ? 8f : zoom);
+        if (z <= 1.0001f) return new int[]{0, 0, sw, sh};
+        int cw = Math.max(1, Math.round(sw / z));
+        int ch = Math.max(1, Math.round(sh / z));
+        float px = panX < -1f ? -1f : (panX > 1f ? 1f : panX);
+        float py = panY < -1f ? -1f : (panY > 1f ? 1f : panY);
+        int x = Math.round((px + 1f) * 0.5f * (sw - cw));
+        int y = Math.round((py + 1f) * 0.5f * (sh - ch));
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        if (x + cw > sw) x = sw - cw;
+        if (y + ch > sh) y = sh - ch;
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        return new int[]{x, y, cw, ch};
+    }
+
     public static Bitmap fitToAspect(Bitmap src, float ratio, Crop crop, int outW, int outH) {
         int sw = src.getWidth(), sh = src.getHeight();
         float srcRatio = sw / (float) sh;

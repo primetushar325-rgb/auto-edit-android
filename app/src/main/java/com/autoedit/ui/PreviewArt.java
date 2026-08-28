@@ -49,41 +49,6 @@ public final class PreviewArt {
     private PreviewArt() {}
 
     /**
-     * Cached, downsampled decode of a bundled category thumbnail (spec §8/§37).
-     *
-     * Every editing category owns one distinct image - Formula = Eiffel Tower,
-     * Transition = Taj Mahal, Motion = Burj Khalifa, Effect = neon light art -
-     * so the tool grid and the card rows read at a glance without any text.
-     * Assets live in {@code drawable-nodpi} and are decoded once at card size,
-     * never on the scroll path, and nothing is fetched at runtime so the whole
-     * UI still works offline.
-     *
-     * The returned bitmap is owned by the cache - callers must NOT recycle it.
-     */
-    public static Bitmap asset(android.content.res.Resources res, int resId, int w, int h) {
-        int bw = Math.max(8, w), bh = Math.max(8, h);
-        String key = "res_" + resId + "_" + bw + "x" + bh;
-        Bitmap cached = CACHE.get(key);
-        if (cached != null && !cached.isRecycled()) return cached;
-
-        android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
-        o.inJustDecodeBounds = true;
-        android.graphics.BitmapFactory.decodeResource(res, resId, o);
-        int sample = 1;
-        while (o.outWidth / (sample * 2) >= bw && o.outHeight / (sample * 2) >= bh) sample *= 2;
-        o.inJustDecodeBounds = false;
-        o.inSampleSize = sample;
-        o.inPreferredConfig = Bitmap.Config.ARGB_8888;
-
-        Bitmap decoded = android.graphics.BitmapFactory.decodeResource(res, resId, o);
-        if (decoded == null) return null;
-        Bitmap scaled = Bitmap.createScaledBitmap(decoded, bw, bh, true);
-        if (scaled != decoded) decoded.recycle();
-        CACHE.put(key, scaled);
-        return scaled;
-    }
-
-    /**
      * Returns a cached scene bitmap of exactly {@code w x h} pixels.
      * The returned bitmap is owned by the cache — callers must NOT recycle it.
      */

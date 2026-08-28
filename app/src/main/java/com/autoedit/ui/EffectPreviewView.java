@@ -78,14 +78,37 @@ public class EffectPreviewView extends View {
     }
 
     /**
-     * Effect cards use the premium cinematic neon / light-effect reference
-     * (spec §8, §11). The chosen effect is then rendered over it with the SAME
-     * EffectEngine pass the preview and export use, so the card shows the real
-     * effect rather than a stock picture.
+     * Each effect card gets its own scene, chosen from the effect name, so the
+     * thumbnails are distinguishable at a glance instead of all showing one
+     * photograph (spec §13). Effects that mostly affect colour read best on the
+     * neon / dark scenes; spatial ones on landscape / city.
      */
     private Bitmap sharedBitmapFor(int w, int h) {
-        Bitmap b = PreviewArt.asset(getResources(),
-                com.autoedit.R.drawable.card_effect_neon, Math.max(96, w), Math.max(120, h));
-        return b != null ? b : PreviewArt.get(PreviewArt.Kind.NEON, Math.max(96, w), Math.max(120, h));
+        int tw = Math.max(96, w), th = Math.max(120, h);
+        PreviewArt.Kind kind;
+        switch (effect == null ? EffectType.NONE : effect) {
+            case VIGNETTE: case FILM_GRAIN: case SUBTLE_NOISE: case FILM_FLICKER:
+            case DUST: case PARTICLES: case FADE:
+                kind = PreviewArt.Kind.DARK; break;
+            case GLOW: case SOFT_GLOW: case BLOOM: case LENS_FLARE: case LIGHT_LEAK:
+            case CINEMATIC_GLOW: case DREAM_GLOW: case HIGHLIGHT_GLOW:
+                kind = PreviewArt.Kind.NEON; break;
+            case BLUR: case GAUSSIAN_BLUR: case MOTION_BLUR: case DIRECTIONAL_BLUR:
+            case SOFT_FOCUS: case DREAM: case CHROMATIC_ABERRATION: case RGB_SHIFT:
+                kind = PreviewArt.Kind.CITY; break;
+            case WARM: case TEMPERATURE: case COOL: case VINTAGE: case SEPIA: case FILM:
+                kind = PreviewArt.Kind.NATURE; break;
+            case BLACK_WHITE: case CONTRAST: case CINEMATIC_SHADOWS: case SHADOWS:
+                kind = PreviewArt.Kind.ARCHITECTURE; break;
+            case BRIGHTNESS: case EXPOSURE: case HIGHLIGHTS: case SHARPEN:
+                kind = PreviewArt.Kind.LANDSCAPE; break;
+            case SATURATION: case COLOR_BOOST:
+                kind = PreviewArt.Kind.ABSTRACT; break;
+            case CINEMATIC:
+                kind = PreviewArt.Kind.PORTRAIT; break;
+            default:
+                kind = PreviewArt.Kind.forId(String.valueOf(effect)); break;
+        }
+        return PreviewArt.get(kind, tw, th);
     }
 }

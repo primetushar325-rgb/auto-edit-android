@@ -57,6 +57,9 @@ public class FrameExtractorActivity extends Activity {
     private int videoW, videoH;
     private long videoSize;
     private double interval = 5;
+    /** Framing the user set with pinch/drag in the preview (spec §9, §10). */
+    private float zoom = 1f, panX = 0f, panY = 0f;
+    private ZoomPanView zoomView;
     private FrameUtils.Aspect aspect = FrameUtils.Aspect.R16_9;
     private FrameUtils.Crop crop = FrameUtils.Crop.CENTER;
     private int customW = 1080, customH = 1920;
@@ -137,13 +140,17 @@ public class FrameExtractorActivity extends Activity {
             vcard.addView(pick, plp);
             vcard.addView(label("MP4, MOV, MKV, WEBM, 3GP — decoded locally on this device, never uploaded.", 11, AeDesign.MUTED, Typeface.NORMAL));
         } else {
+            // Pinch-to-zoom / drag-to-pan framing preview. The extracted frames
+            // use this exact window, so what is on screen is what gets saved.
+            zoomView = new ZoomPanView(this);
+            zoomView.setImageBitmapSafe(videoThumb());
+            zoomView.setListener((z, px, py) -> { zoom = z; panX = px; panY = py; });
+            vcard.addView(zoomView, new LinearLayout.LayoutParams(-1, dp(190)));
+            vcard.addView(label("Pinch with two fingers to zoom, drag to reposition. Extracted frames use this framing.",
+                    10, AeDesign.MUTED, Typeface.NORMAL));
+
             LinearLayout vrow = row();
             vrow.setGravity(Gravity.CENTER_VERTICAL);
-            ImageView thumb = new ImageView(this);
-            thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            thumb.setImageBitmap(videoThumb());
-            thumb.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(12), AeDesign.STROKE, 1));
-            vrow.addView(thumb, new LinearLayout.LayoutParams(dp(84), dp(64)));
             LinearLayout vinfo = col();
             vinfo.setPadding(dp(12), 0, 0, 0);
             vinfo.addView(label(videoName, 14, AeDesign.TEXT, Typeface.BOLD));
@@ -327,6 +334,9 @@ public class FrameExtractorActivity extends Activity {
         i.putExtra(FrameExtractService.EXTRA_END, endSec);
         i.putExtra(FrameExtractService.EXTRA_ASPECT, aspect.name());
         i.putExtra(FrameExtractService.EXTRA_CROP, crop.name());
+        i.putExtra(FrameExtractService.EXTRA_ZOOM, zoom);
+        i.putExtra(FrameExtractService.EXTRA_PAN_X, panX);
+        i.putExtra(FrameExtractService.EXTRA_PAN_Y, panY);
         i.putExtra(FrameExtractService.EXTRA_OUT_W, customW);
         i.putExtra(FrameExtractService.EXTRA_OUT_H, customH);
         i.putExtra(FrameExtractService.EXTRA_FORMAT, format);
@@ -571,8 +581,8 @@ public class FrameExtractorActivity extends Activity {
 
         new AlertDialog.Builder(this)
                 .setTitle("Save to Gallery")
-                .setMessage("Save " + list.size() + " frame(s) to Pictures/AutoEdit/Frames or DCIM/AutoEdit?")
-                .setPositiveButton("Pictures/AutoEdit/Frames", (d, w) -> doSaveToGallery(list, GallerySaver.Folder.FRAMES))
+                .setMessage("Save " + list.size() + " frame(s) to Pictures/AutoEdit or DCIM/AutoEdit?")
+                .setPositiveButton("Pictures/AutoEdit", (d, w) -> doSaveToGallery(list, GallerySaver.Folder.PICTURES))
                 .setNeutralButton("DCIM/AutoEdit", (d, w) -> doSaveToGallery(list, GallerySaver.Folder.DCIM))
                 .setNegativeButton("Cancel", null)
                 .show();

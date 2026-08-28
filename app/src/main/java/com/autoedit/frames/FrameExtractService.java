@@ -33,6 +33,10 @@ public class FrameExtractService extends Service {
     public static final String EXTRA_CROP = "crop";
     public static final String EXTRA_OUT_W = "outW";
     public static final String EXTRA_OUT_H = "outH";
+    /** Preview zoom the user framed with pinch gestures (spec §9/§10). */
+    public static final String EXTRA_ZOOM = "zoom";
+    public static final String EXTRA_PAN_X = "panX";
+    public static final String EXTRA_PAN_Y = "panY";
     public static final String EXTRA_FORMAT = "format";
     public static final String EXTRA_QUALITY = "quality";
     public static final String EXTRA_DIR = "dir";
@@ -61,6 +65,11 @@ public class FrameExtractService extends Service {
         FrameUtils.Aspect aspect = FrameUtils.Aspect.valueOf(i.getStringExtra(EXTRA_ASPECT));
         FrameUtils.Crop crop = FrameUtils.Crop.valueOf(i.getStringExtra(EXTRA_CROP));
         int outW = i.getIntExtra(EXTRA_OUT_W, 0), outH = i.getIntExtra(EXTRA_OUT_H, 0);
+        // The zoom/pan the user set in the preview. Frames must come out with
+        // the same composition the user saw, never the untouched source.
+        final float zoom = i.getFloatExtra(EXTRA_ZOOM, 1f);
+        final float panX = i.getFloatExtra(EXTRA_PAN_X, 0f);
+        final float panY = i.getFloatExtra(EXTRA_PAN_Y, 0f);
         String format = i.getStringExtra(EXTRA_FORMAT);
         int quality = i.getIntExtra(EXTRA_QUALITY, 90);
         File dir = new File(i.getStringExtra(EXTRA_DIR));
@@ -108,6 +117,8 @@ public class FrameExtractService extends Service {
                         if (seq > 0 && t > durationSec - interval) break;
                         throw new IllegalStateException("Could not decode a frame at " + FrameUtils.fmtTime(t));
                     }
+                    frame = FrameUtils.cropZoomPan(frame, zoom, panX, panY);
+                    if (frame == null) continue;
                     if (aspect == FrameUtils.Aspect.ORIGINAL && dims[0] == frame.getWidth() && dims[1] == frame.getHeight()) {
                         out = frame;
                     } else {

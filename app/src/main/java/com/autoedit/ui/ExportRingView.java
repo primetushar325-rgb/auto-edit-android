@@ -124,9 +124,53 @@ public class ExportRingView extends View {
         t0 = SystemClock.elapsedRealtime();
     }
 
-    public void setRunning(boolean r) { running = r; if (r) tick(); }
-    public void setDone(boolean d) { done = d; if (d) { removeCallbacks(tickRunnable); invalidate(); } }
-    public void setProgress(float p) { progress = Math.max(0f, Math.min(1f, p)); }
+    /**
+     * Starts or stops the animation. The loop is driven entirely by the real
+     * export state: running -> animating, stopped -> frozen, done -> success.
+     */
+    public void setRunning(boolean r) {
+        if (running == r) return;
+        running = r;
+        if (r) {
+            // Re-base the clock so a resumed export does not jump forward.
+            t0 = SystemClock.elapsedRealtime();
+            startLoop();
+        } else {
+            removeCallbacks(tickRunnable);
+            invalidate();
+        }
+    }
+
+    public void setDone(boolean d) {
+        done = d;
+        if (d) { removeCallbacks(tickRunnable); invalidate(); }
+    }
+
+    /**
+     * Records real progress. This must repaint: previously the field was
+     * updated but nothing invalidated the view, so the arc only moved when some
+     * unrelated redraw happened to occur.
+     */
+    public void setProgress(float p) {
+        float v = Math.max(0f, Math.min(1f, p));
+        if (v == progress) return;
+        progress = v;
+        invalidate();
+    }
+
+    /**
+     * Drives the animation at ~60 fps.
+     *
+     * The bug this replaces: {@code tick()} only re-posted itself and never
+     * called {@code invalidate()}, and {@code setProgress} did not either, so
+     * the ONLY invalidate in the whole class was inside {@code setDone(true)}.
+     * The ring therefore never rotated and the arc never moved - exactly the
+     * "static / stuck" export animation that was reported.
+     */
+    private void startLoop() {
+        removeCallbacks(tickRunnable);
+        if (isShown() && running && !done) postDelayed(tickRunnable, 16);
+    }
 
     @Override
     protected void onAttachedToWindow() {
@@ -167,9 +211,25 @@ public class ExportRingView extends View {
 
     private void tick() {
         if (!isShown() || !running || done) { removeCallbacks(tickRunnable); return; }
+        invalidate();                       // <- the missing repaint
         postDelayed(tickRunnable, 16);
     }
     private final Runnable tickRunnable = this::tick;
+
+    /** Resume when the view becomes visible, stop when it does not. */
+    @Override
+    protected void onVisibilityChanged(View changedView, int visibility) {
+        super.onVisibilityChanged(changedView, visibility);
+        if (visibility == VISIBLE) startLoop();
+        else removeCallbacks(tickRunnable);
+    }
+
+    /** Never leak the callback past the view's lifetime. */
+    @Override
+    protected void onDetachedFromWindow() {
+        removeCallbacks(tickRunnable);
+        super.onDetachedFromWindow();
+    }
 
     @Override
     protected void onDraw(Canvas canvas) {

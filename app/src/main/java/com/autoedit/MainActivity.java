@@ -114,6 +114,14 @@ public class MainActivity extends Activity {
             // The service hands us the FINAL published MediaStore URI, so the
             // completion screen never has to guess which file was written.
             if (uri != null) { completionUri = Uri.parse(uri); completionFileName = name; completionHasAudio = hasAudio; }
+            // -3 is the service telling us "nothing is running". Drop a stale
+            // progress screen rather than showing an error for an export that
+            // already finished.
+            if (p == -3) {
+                exportRunning = false;
+                if ("exporting".equals(screen)) showEditor();
+                return;
+            }
             updateExportProgress(p, stage, m);
         }
     };
@@ -191,6 +199,32 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(exportReceiver, new IntentFilter(ExportService.ACTION_PROGRESS), RECEIVER_NOT_EXPORTED);
         else registerReceiver(exportReceiver, new IntentFilter(ExportService.ACTION_PROGRESS));
         runUpdateCheck(); // re-check when the app comes back (network may be available now)
+        queryExportState();
+    }
+
+    /**
+     * Asks the export service what it is doing right now (spec §3).
+     *
+     * The export runs in a foreground service, which outlives this activity. So
+     * when the user minimises the app mid-export and opens it again, the
+     * activity's own {@code exportRunning} flag is stale - it only survives a
+     * configuration change, not a fresh launch. Querying the service is the only
+     * reliable way to know, and it must NOT restart the export: {@code
+     * ACTION_QUERY} only re-broadcasts current progress.
+     */
+    private void queryExportState() {
+        try {
+            Intent q = new Intent(this, ExportService.class);
+            q.setAction(ExportService.ACTION_QUERY);
+            startService(q);
+        } catch (Exception e) {
+            // Service unavailable - fall back to the service's own snapshot.
+            Log.w(TAG, "Could not query export state", e);
+        }
+        if (ExportService.sRunning && !"exporting".equals(screen)) {
+            exportRunning = true;
+            showExportProgressScreen();
+        }
     }
 
     @Override protected void onPause() {
@@ -2250,52 +2284,20 @@ public class MainActivity extends Activity {
 
     private void playVideo(Uri uri) {
         if (uri == null) { toast("Video is not available yet"); return; }
-        Intent i = new Intent(Intent.ACTION_VIEW);
-        i.setDataAndType(uri, "video/mp4");
-        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
-            if (i.resolveActivity(getPackageManager()) != null) {
-                startActivity(i);
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(uri, "video/mp4");
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            PackageManager pm = getPackageManager();
+            if (i.resolveActivity(pm) == null) {
+                toast("No video player installed. Find it in Movies/AutoEdit.");
                 return;
             }
+            startActivity(i);
         } catch (Exception e) {
-            // resolveActivity can succeed and startActivity still fail (a
-            // handler that refuses our URI). Fall through to the chooser.
-            Log.w(TAG, "Direct playback failed, offering alternatives", e);
+            Log.e(TAG, "Play failed", e);
+            toast("Could not open video: " + e.getMessage());
         }
-        offerPlaybackAlternatives(uri);
-    }
-
-    /**
-     * Fallback when nothing can play the file directly (spec §22).
-     *
-     * A bare "no player installed" toast is a dead end, and on Android 11+
-     * {@code resolveActivity} can also return null purely because of package
-     * visibility even when a player exists. So instead of failing we hand the
-     * user the two routes that always work: the system chooser, which lets any
-     * app that can take a video/mp4 URI have it, and Share.
-     */
-    private void offerPlaybackAlternatives(Uri uri) {
-        String name = completionFileName == null ? "your video" : completionFileName;
-        new android.app.AlertDialog.Builder(this)
-                .setTitle("No default video player")
-                .setMessage("No app is set to open videos directly. You can still watch \""
-                        + name + "\" - choose how to open it, or share it to another app.\n\n"
-                        + "The file is saved in Movies/AutoEdit and is visible in Gallery.")
-                .setPositiveButton("Choose an app", (d, w) -> {
-                    try {
-                        Intent pick = new Intent(Intent.ACTION_VIEW);
-                        pick.setDataAndType(uri, "video/mp4");
-                        pick.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
-                        startActivity(Intent.createChooser(pick, "Open video with"));
-                    } catch (Exception e) {
-                        Log.e(TAG, "Chooser failed", e);
-                        toast("Could not open the video: " + e.getMessage());
-                    }
-                })
-                .setNeutralButton("Share", (d, w) -> shareVideo(uri))
-                .setNegativeButton("Close", null)
-                .show();
     }
 
     private void shareVideo(Uri uri) {
