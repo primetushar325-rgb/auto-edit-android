@@ -1,14 +1,17 @@
 {
-  "latestVersionCode": 13,
-  "latestVersionName": "1.5.0",
+  "latestVersionCode": 10,
+  "latestVersionName": "1.3.0",
   "minimumSupportedVersionCode": 4,
   "downloadUrl": "https://github.com/primetushar325-rgb/auto-edit-android/releases/latest/download/AutoEdit-latest.apk",
   "releaseNotes": [
-    "FIXED: the export ring never actually animated - it was missing its repaint call, so it looked frozen. It now rotates smoothly at ~60fps while exporting and stops cleanly at 100%",
-    "FIXED: reopening AutoEdit during an export now shows the real current progress instead of assuming nothing is running",
-    "NEW: pinch-to-zoom and drag-to-pan framing in the Video to Image extractor - extracted frames use exactly the framing you see",
-    "Frame extraction already supported Start / End / interval; the new framing works together with it",
-    "Export progress percentage now repaints the ring immediately on every real update",
-    "Background export, the progress notification, multiple audio tracks and audio muxing are unchanged and still working"
+    "Fixed black edges and gaps during pan, push and slide transitions - clips now tile the frame exactly",
+    "64 motion presets, 34 formula patterns, 32 transitions, 41 effects and 26 easing curves",
+    "Card thumbnails are now distinct per option instead of repeating one photo",
+    "Easing picker shows an animated curve graph so you can see the motion before applying it",
+    "Export verifies the finished MP4 really contains a video track (and an audio track when you added music) before saving",
+    "Saved videos go to Movies/AutoEdit and extracted frames to Pictures/AutoEdit - both appear in Gallery immediately",
+    "Projects now save text overlays, audio tracks, effect layers and quality settings - nothing is lost on reopen",
+    "Fixed back easings overshooting twice as far as intended",
+    "In-app update: correct version compare (1.10.0 > 1.9.0), verified downloads, clear errors instead of silent failure"
   ]
 }

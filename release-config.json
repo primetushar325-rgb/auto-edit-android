@@ -2,11 +2,10 @@
   "_comment": "Release automation config. minimumSupportedVersionCode: if omitted or 0, defaults to the new versionCode (fully mandatory). Set it LOWER than the new versionCode to allow older versions to keep working. releaseNotes: bullets shown on the update screen. You only edit THIS file and the versionCode/versionName in app/build.gradle.kts — the workflow generates version.json and the GitHub Release automatically.",
   "minimumSupportedVersionCode": 4,
   "releaseNotes": [
-    "FIXED: the export ring never actually animated - it was missing its repaint call, so it looked frozen. It now rotates smoothly at ~60fps while exporting and stops cleanly at 100%",
-    "FIXED: reopening AutoEdit during an export now shows the real current progress instead of assuming nothing is running",
-    "NEW: pinch-to-zoom and drag-to-pan framing in the Video to Image extractor - extracted frames use exactly the framing you see",
-    "Frame extraction already supported Start / End / interval; the new framing works together with it",
-    "Export progress percentage now repaints the ring immediately on every real update",
-    "Background export, the progress notification, multiple audio tracks and audio muxing are unchanged and still working"
+    "FIXED: restored the nine category thumbnails (Eiffel Tower, Burj Khalifa, Taj Mahal and the rest) that v1.5.0 accidentally dropped",
+    "FIXED: restored saving extracted frames to Pictures/AutoEdit/Frames",
+    "FIXED: restored the Play Video fallback chooser",
+    "Kept from v1.5.0: export ring now animates smoothly, reopening the app resumes real export progress, and the frame extractor has pinch-to-zoom framing",
+    "104 unit tests passing"
   ]
 }
