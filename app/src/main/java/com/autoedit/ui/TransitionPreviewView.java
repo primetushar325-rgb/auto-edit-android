@@ -134,14 +134,20 @@ public class TransitionPreviewView extends View {
      * outgoing panel uses one scene and the incoming panel another (spec §13:
      * "two different visual frames, clear directional preview").
      */
+    /** Transition cards use the Taj Mahal / India cinematic reference (spec §8). */
     private Bitmap sharedBitmapFor(int w, int h) {
-        int tw = Math.max(96, w), th = Math.max(120, h);
-        return PreviewArt.get(PreviewArt.Kind.forId("T" + (type == null ? "NONE" : type.name())), tw, th);
+        Bitmap b = PreviewArt.asset(getResources(),
+                com.autoedit.R.drawable.card_transition_tajmahal, Math.max(96, w), Math.max(120, h));
+        return b != null ? b : PreviewArt.get(PreviewArt.Kind.CITY, Math.max(96, w), Math.max(120, h));
     }
 
-    /** The contrasting scene for the incoming half of the transition. */
+    /**
+     * The incoming half deliberately uses a DIFFERENT landmark so the two panels
+     * read as separate clips and the direction of travel is obvious.
+     */
     private Bitmap incomingBitmapFor(int w, int h) {
-        int tw = Math.max(96, w), th = Math.max(120, h);
-        return PreviewArt.get(PreviewArt.Kind.forId("T2" + (type == null ? "NONE" : type.name())), tw, th);
+        Bitmap b = PreviewArt.asset(getResources(),
+                com.autoedit.R.drawable.card_formula_eiffel, Math.max(96, w), Math.max(120, h));
+        return b != null ? b : PreviewArt.get(PreviewArt.Kind.LANDSCAPE, Math.max(96, w), Math.max(120, h));
     }
 }

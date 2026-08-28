@@ -571,8 +571,8 @@ public class FrameExtractorActivity extends Activity {
 
         new AlertDialog.Builder(this)
                 .setTitle("Save to Gallery")
-                .setMessage("Save " + list.size() + " frame(s) to Pictures/AutoEdit or DCIM/AutoEdit?")
-                .setPositiveButton("Pictures/AutoEdit", (d, w) -> doSaveToGallery(list, GallerySaver.Folder.PICTURES))
+                .setMessage("Save " + list.size() + " frame(s) to Pictures/AutoEdit/Frames or DCIM/AutoEdit?")
+                .setPositiveButton("Pictures/AutoEdit/Frames", (d, w) -> doSaveToGallery(list, GallerySaver.Folder.FRAMES))
                 .setNeutralButton("DCIM/AutoEdit", (d, w) -> doSaveToGallery(list, GallerySaver.Folder.DCIM))
                 .setNegativeButton("Cancel", null)
                 .show();

@@ -100,9 +100,17 @@ public class FormulaPreviewView extends View {
      * A formula card shows a CINEMATIC SEQUENCE scene picked from the formula
      * id, so two different formulas never show the same photograph (spec §13).
      */
+    /**
+     * Formula cards use the Eiffel Tower / Paris cinematic reference (spec §8,
+     * §37). Subclasses override this to give their own category a distinct
+     * image - MotionPreviewView swaps in the Burj Khalifa.
+     */
+    protected int sceneRes() { return com.autoedit.R.drawable.card_formula_eiffel; }
+
     private Bitmap sharedBitmapFor(int w, int h) {
-        int tw = Math.max(96, w), th = Math.max(120, h);
-        String id = formula == null ? null : formula.id;
-        return PreviewArt.get(PreviewArt.Kind.forId(id == null ? "formula" : "F" + id), tw, th);
+        Bitmap b = PreviewArt.asset(getResources(), sceneRes(), Math.max(96, w), Math.max(120, h));
+        // Never fall back to a blank card if the asset is somehow unavailable.
+        return b != null ? b
+                : PreviewArt.get(PreviewArt.Kind.LANDSCAPE, Math.max(96, w), Math.max(120, h));
     }
 }

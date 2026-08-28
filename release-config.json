@@ -2,12 +2,11 @@
   "_comment": "Release automation config. minimumSupportedVersionCode: if omitted or 0, defaults to the new versionCode (fully mandatory). Set it LOWER than the new versionCode to allow older versions to keep working. releaseNotes: bullets shown on the update screen. You only edit THIS file and the versionCode/versionName in app/build.gradle.kts — the workflow generates version.json and the GitHub Release automatically.",
   "minimumSupportedVersionCode": 4,
   "releaseNotes": [
-    "FIXED: export no longer freezes on 'Finalizing...' - verification now has its own visible stage and a time limit",
-    "FIXED: export failures now show the real reason instead of a frozen status and a dash for the percentage",
-    "Export state machine: Preparing > Optimizing > Audio > Rendering > Encoding > Finalizing > Verifying > Saving > Complete",
-    "The finished MP4 is read back and checked for a video track (and an audio track when you added music) before it is published",
-    "Percentage can no longer show a negative or invalid value",
-    "Restored the proven publish ordering from the last known-good export build",
-    "64 motion presets, 34 formula patterns, 32 transitions, 41 effects and 26 easing curves, each with its own card preview"
+    "NEW: every editing category now has its own premium thumbnail - Formula = Eiffel Tower, Transition = Taj Mahal, Motion = Burj Khalifa, Effects = neon light art",
+    "Formula, Motion, Transition and Effect cards now show real category imagery instead of generated placeholders, while still animating the actual motion/effect on top",
+    "Extracted video frames now save to Pictures/AutoEdit/Frames so they are grouped and easy to find in Gallery",
+    "Play Video no longer dead-ends when no default player is set - you get a chooser plus Share",
+    "All assets are bundled locally, so the app stays fully offline",
+    "Export fix from 1.3.1 kept: no more freeze on 'Finalizing...', real error messages, verified MP4 before 'Export Complete'"
   ]
 }

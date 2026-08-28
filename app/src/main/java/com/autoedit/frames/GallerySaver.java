@@ -28,15 +28,39 @@ import java.io.OutputStream;
  */
 public final class GallerySaver {
 
-    /** Where the frame lands. */
+    /**
+     * Where a saved image lands.
+     *
+     * {@link #FRAMES} is the spec §24 location for extracted video frames:
+     * {@code Pictures/AutoEdit/Frames}, so frames are grouped separately from
+     * anything else the app saves and are trivially findable in Gallery.
+     */
     public enum Folder {
-        PICTURES(Environment.DIRECTORY_PICTURES, "Pictures/AutoEdit"),
-        DCIM(Environment.DIRECTORY_DCIM, "DCIM/AutoEdit");
+        PICTURES(Environment.DIRECTORY_PICTURES, "Pictures/AutoEdit", "AutoEdit"),
+        FRAMES(Environment.DIRECTORY_PICTURES, "Pictures/AutoEdit/Frames", "AutoEdit/Frames"),
+        DCIM(Environment.DIRECTORY_DCIM, "DCIM/AutoEdit", "AutoEdit");
 
+        /** Root public directory, e.g. {@code Environment.DIRECTORY_PICTURES}. */
         public final String dir;
+        /** Full relative path used for MediaStore {@code RELATIVE_PATH}. */
         public final String label;
+        /**
+         * The same location expressed below the public root, e.g.
+         * {@code AutoEdit/Frames}. Used by the pre-Android-10 branch, which
+         * builds a real {@link File} rather than a RELATIVE_PATH.
+         *
+         * It is stored explicitly instead of being sliced out of {@link #label},
+         * so path construction never depends on the value of a platform
+         * constant and the two branches cannot drift apart.
+         */
+        public final String sub;
 
-        Folder(String dir, String label) { this.dir = dir; this.label = label; }
+        Folder(String dir, String label, String sub) {
+            this.dir = dir; this.label = label; this.sub = sub;
+        }
+
+        /** @see #sub */
+        public String subPath() { return sub; }
     }
 
     /** One saved frame. */
@@ -73,7 +97,7 @@ public final class GallerySaver {
             ContentValues values = new ContentValues();
             values.put(MediaStore.Images.Media.DISPLAY_NAME, name);
             values.put(MediaStore.Images.Media.MIME_TYPE, mimeFor(ext));
-            values.put(MediaStore.Images.Media.RELATIVE_PATH, folder.dir + "/AutoEdit");
+            values.put(MediaStore.Images.Media.RELATIVE_PATH, folder.label + "/");
             values.put(MediaStore.Images.Media.IS_PENDING, 1);
             Uri collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
             Uri item = ctx.getContentResolver().insert(collection, values);
@@ -94,7 +118,7 @@ public final class GallerySaver {
             return new Saved(item, name, folder.label, bytes);
         }
 
-        File dir = new File(Environment.getExternalStoragePublicDirectory(folder.dir), "AutoEdit");
+        File dir = new File(Environment.getExternalStoragePublicDirectory(folder.dir), folder.subPath());
         if (!dir.exists() && !dir.mkdirs()) throw new IOException("Could not create " + folder.label + ".");
         File out = new File(dir, name);
         try (FileOutputStream fos = new FileOutputStream(out)) {

@@ -2250,20 +2250,52 @@ public class MainActivity extends Activity {
 
     private void playVideo(Uri uri) {
         if (uri == null) { toast("Video is not available yet"); return; }
+        Intent i = new Intent(Intent.ACTION_VIEW);
+        i.setDataAndType(uri, "video/mp4");
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
-            Intent i = new Intent(Intent.ACTION_VIEW);
-            i.setDataAndType(uri, "video/mp4");
-            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
-            PackageManager pm = getPackageManager();
-            if (i.resolveActivity(pm) == null) {
-                toast("No video player installed. Find it in Movies/AutoEdit.");
+            if (i.resolveActivity(getPackageManager()) != null) {
+                startActivity(i);
                 return;
             }
-            startActivity(i);
         } catch (Exception e) {
-            Log.e(TAG, "Play failed", e);
-            toast("Could not open video: " + e.getMessage());
+            // resolveActivity can succeed and startActivity still fail (a
+            // handler that refuses our URI). Fall through to the chooser.
+            Log.w(TAG, "Direct playback failed, offering alternatives", e);
         }
+        offerPlaybackAlternatives(uri);
+    }
+
+    /**
+     * Fallback when nothing can play the file directly (spec §22).
+     *
+     * A bare "no player installed" toast is a dead end, and on Android 11+
+     * {@code resolveActivity} can also return null purely because of package
+     * visibility even when a player exists. So instead of failing we hand the
+     * user the two routes that always work: the system chooser, which lets any
+     * app that can take a video/mp4 URI have it, and Share.
+     */
+    private void offerPlaybackAlternatives(Uri uri) {
+        String name = completionFileName == null ? "your video" : completionFileName;
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("No default video player")
+                .setMessage("No app is set to open videos directly. You can still watch \""
+                        + name + "\" - choose how to open it, or share it to another app.\n\n"
+                        + "The file is saved in Movies/AutoEdit and is visible in Gallery.")
+                .setPositiveButton("Choose an app", (d, w) -> {
+                    try {
+                        Intent pick = new Intent(Intent.ACTION_VIEW);
+                        pick.setDataAndType(uri, "video/mp4");
+                        pick.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(Intent.createChooser(pick, "Open video with"));
+                    } catch (Exception e) {
+                        Log.e(TAG, "Chooser failed", e);
+                        toast("Could not open the video: " + e.getMessage());
+                    }
+                })
+                .setNeutralButton("Share", (d, w) -> shareVideo(uri))
+                .setNegativeButton("Close", null)
+                .show();
     }
 
     private void shareVideo(Uri uri) {
