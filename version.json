@@ -4,9 +4,9 @@
   "minimumSupportedVersionCode": 4,
   "downloadUrl": "https://github.com/primetushar325-rgb/auto-edit-android/releases/latest/download/AutoEdit-latest.apk",
   "releaseNotes": [
-    "Fixed Export Progress screen logo (transparent, small, inside the ring)",
-    "New: Custom Formula creator with keyframes and live preview",
-    "New: Video Frame Extractor (offline, ZIP export)",
-    "New: mandatory update system (GitHub Releases)"
+    "Fixed Export Progress screen logo",
+    "Custom formulas and keyframes",
+    "Video Frame Extractor (offline)",
+    "Mandatory update system"
   ]
 }
