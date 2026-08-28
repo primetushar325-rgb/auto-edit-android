@@ -73,13 +73,22 @@ jobs:
 
       - name: Verify APK exists
         run: |
-          test -f app/build/outputs/apk/release/app-release.apk || (echo "APK missing — aborting." && exit 1)
+          # Signed builds produce app-release.apk; unsigned builds (no signing
+          # secrets configured) produce app-release-unsigned.apk.
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            echo "RELEASE_APK=app/build/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
+          elif [ -f app/build/outputs/apk/release/app-release-unsigned.apk ]; then
+            echo "RELEASE_APK=app/build/outputs/apk/release/app-release-unsigned.apk" >> "$GITHUB_ENV"
+          else
+            echo "APK missing — aborting." && exit 1
+          fi
           ls -la app/build/outputs/apk/release/
+          echo "Using $RELEASE_APK"
 
       - name: Read version from project (no hardcoding)
         run: |
           python3 - <<'EOF'
-          import re
+          import os, re
           g = open('app/build.gradle.kts').read()
           vc = re.search(r'versionCode\s*=\s*(\d+)', g).group(1)
           vn = re.search(r'versionName\s*=\s*"([^"]+)"', g).group(1)
