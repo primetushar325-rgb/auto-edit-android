@@ -4,10 +4,10 @@
   "minimumSupportedVersionCode": 4,
   "downloadUrl": "https://github.com/primetushar325-rgb/auto-edit-android/releases/latest/download/AutoEdit-latest.apk",
   "releaseNotes": [
-    "NEW: Formula is now a repeating per-clip motion pattern (clip 1 → motion 1, clip 2 → motion 2, then repeats)",
-    "24 motion presets, 20 formula patterns, 20 transitions, 23 effects — every card has a live preview",
+    "NEW: Formula is now a repeating per-clip motion pattern (clip 1 \u2192 motion 1, clip 2 \u2192 motion 2, then repeats)",
+    "24 motion presets, 20 formula patterns, 20 transitions, 23 effects \u2014 every card has a live preview",
     "Safe-scale rendering: no more black/empty edges during pan, slide or zoom",
-    "Bottom-sheet tool panels — the preview no longer shrinks; swipe to close",
+    "Bottom-sheet tool panels \u2014 the preview no longer shrinks; swipe to close",
     "Unlimited custom formulas with add / reorder / delete steps",
     "More reliable export timing, validation, play and share"
   ]
