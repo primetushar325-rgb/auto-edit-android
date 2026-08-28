@@ -82,6 +82,13 @@ public class MainActivity extends Activity {
 
     // export completion widgets (kept for the async permission-grant refresh)
     private static final int REQ_VIDEO_PERM = 20;
+
+    // Startup permission pass: requested one at a time from onCreate().
+    private static final int REQ_STARTUP_NOTIFICATIONS = 9001;
+    private static final int REQ_STARTUP_MEDIA = 9002;
+    /** Set once the user has answered the startup prompts, so we never nag again. */
+    private static final String PREFS = "autoedit.startup";
+    private static final String KEY_STARTUP_ASKED = "startupPermsAsked";
     private ImageView completionThumb;
     private Button completionPlay, completionShare;
     private Uri completionUri;
@@ -143,6 +150,61 @@ public class MainActivity extends Activity {
         if (exportRunning) showExportProgressScreen(); else showHome();
         handler.postDelayed(autosave, 30000);
         runUpdateCheck();
+        // Ask for everything the app needs up front, one prompt at a time,
+        // instead of interrupting the user later in the middle of a task.
+        requestStartupPermissions();
+    }
+
+    // ------------------------------------------------- startup permissions
+
+    /**
+     * Requests the app's runtime permissions once, serially, on first launch.
+     *
+     * <p>Android shows one dialog at a time and only answers through
+     * {@link #onRequestPermissionsResult}, so this hands out the first missing
+     * permission and {@code onRequestPermissionsResult} calls it again to hand
+     * out the next. That keeps the prompts sequential rather than stacking.
+     *
+     * <p>It runs only until the user has answered: once every prompt in the
+     * list has been shown, {@link #KEY_STARTUP_ASKED} is persisted and later
+     * launches stay silent. A denial is never fatal - the affected feature
+     * simply stays off (no export-progress notification, no thumbnail refresh)
+     * and the rest of the editor works normally.
+     */
+    private void requestStartupPermissions() {
+        if (getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_STARTUP_ASKED, false)) return;
+        requestNextStartupPermission();
+    }
+
+    /** Hands out the next un-granted startup permission, or marks the pass done. */
+    private void requestNextStartupPermission() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED && !notifPermissionAsked) {
+                    notifPermissionAsked = true;
+                    toast("Allow notifications to see export progress in the background");
+                    requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},
+                            REQ_STARTUP_NOTIFICATIONS);
+                    return;
+                }
+                if (checkSelfPermission(android.Manifest.permission.READ_MEDIA_VIDEO)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(new String[]{android.Manifest.permission.READ_MEDIA_VIDEO},
+                            REQ_STARTUP_MEDIA);
+                    return;
+                }
+            } else if (checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{android.Manifest.permission.READ_EXTERNAL_STORAGE},
+                        REQ_STARTUP_MEDIA);
+                return;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Startup permission request failed", e);
+        }
+        // Nothing left to ask for (all granted, or all answered).
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_STARTUP_ASKED, true).apply();
     }
 
     // ------------------------------------------------- update system (mandatory)
@@ -2232,6 +2294,12 @@ public class MainActivity extends Activity {
         if (req == REQ_VIDEO_PERM && res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) {
             completionUri = null;
             wireCompletionVideo();
+        }
+        // Advance the serial startup pass. The result is deliberately not
+        // inspected: granted or denied, we simply move on to the next prompt so
+        // a refusal can never stall the sequence or crash the app.
+        if (req == REQ_STARTUP_NOTIFICATIONS || req == REQ_STARTUP_MEDIA) {
+            requestNextStartupPermission();
         }
     }
 

@@ -143,7 +143,16 @@ public class FrameExtractorActivity extends Activity {
             // Pinch-to-zoom / drag-to-pan framing preview. The extracted frames
             // use this exact window, so what is on screen is what gets saved.
             zoomView = new ZoomPanView(this);
-            zoomView.setImageBitmapSafe(videoThumb());
+            Bitmap previewFrame = null;
+            try {
+                previewFrame = videoThumb();
+            } catch (Exception e) {
+                Log.w(TAG, "Preview thumbnail failed", e);
+            } catch (OutOfMemoryError oom) {
+                Log.e(TAG, "Out of memory on the preview thumbnail", oom);
+            }
+            // null is fine: ZoomPanView draws its own placeholder.
+            zoomView.setImageBitmapSafe(previewFrame);
             zoomView.setListener((z, px, py) -> { zoom = z; panX = px; panY = py; });
             vcard.addView(zoomView, new LinearLayout.LayoutParams(-1, dp(190)));
             vcard.addView(label("Pinch with two fingers to zoom, drag to reposition. Extracted frames use this framing.",
@@ -782,17 +791,71 @@ public class FrameExtractorActivity extends Activity {
         } catch (Exception ignored) {}
     }
 
+    /** Widest the preview thumbnail is allowed to be, in pixels. */
+    private static final int THUMB_MAX_W = 720;
+
+    /**
+     * First frame of the selected video, scaled down for the preview.
+     *
+     * <p>{@code getFrameAtTime()} returns the frame at the video's FULL
+     * resolution. On a 4K clip that is 3840x2160 ARGB_8888 - about 33 MB - and
+     * decoding it straight into a small preview view was enough to throw
+     * {@link OutOfMemoryError} and take the whole activity down. The frame is
+     * therefore downscaled to at most {@value #THUMB_MAX_W}px wide (aspect
+     * ratio preserved) and the full-size bitmap is recycled immediately, so the
+     * large allocation is never held.
+     *
+     * <p>{@code OutOfMemoryError} is caught separately because it is an
+     * {@link Error}, not an {@link Exception} - a plain {@code catch
+     * (Exception)} would not intercept it. Either way this returns {@code null}
+     * and the caller shows a placeholder rather than crashing.
+     *
+     * <p>Only the preview thumbnail is affected here; the real frame extraction
+     * in {@code FrameExtractService} is untouched.
+     */
     private Bitmap videoThumb() {
         if (videoUri == null) return null;
         MediaMetadataRetriever mmr = new MediaMetadataRetriever();
+        Bitmap full = null;
+        Bitmap result = null;
         try {
             mmr.setDataSource(this, Uri.parse(videoUri));
-            return mmr.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            full = mmr.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            if (full == null) return null;
+            result = downscale(full, THUMB_MAX_W);
+            return result;
         } catch (Exception e) {
+            Log.w(TAG, "Could not build the video preview thumbnail", e);
+            return null;
+        } catch (OutOfMemoryError oom) {
+            // An Error, not an Exception - caught on purpose.
+            Log.e(TAG, "Out of memory building the video preview thumbnail", oom);
             return null;
         } finally {
+            // Drop the full-size frame, but ONLY when downscale() produced a
+            // different object. When the video is already small enough
+            // downscale() hands back the same bitmap, and recycling it here
+            // would free the very bitmap the caller is about to draw.
+            if (full != null && full != result && !full.isRecycled()) full.recycle();
             try { mmr.release(); } catch (Exception ignored) {}
         }
+    }
+
+    /**
+     * Scales {@code src} down so its width is at most {@code maxW}, preserving
+     * the aspect ratio. Returns {@code src} unchanged when it already fits.
+     *
+     * <p>Recycles {@code src} only when it produced a NEW bitmap, so the caller
+     * can safely recycle whatever this returns without double-freeing.
+     */
+    private Bitmap downscale(Bitmap src, int maxW) {
+        int w = src.getWidth(), h = src.getHeight();
+        if (w <= maxW || w <= 0 || h <= 0) return src;
+        int nw = maxW;
+        int nh = Math.max(1, Math.round(h * (maxW / (float) w)));
+        Bitmap out = Bitmap.createScaledBitmap(src, nw, nh, true);
+        if (out != src) src.recycle();
+        return out;
     }
 
     private long availableBytes() {

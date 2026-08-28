@@ -2,7 +2,7 @@
   "_comment": "Release automation config. minimumSupportedVersionCode: if omitted or 0, defaults to the new versionCode (fully mandatory). Set it LOWER than the new versionCode to allow older versions to keep working. releaseNotes: bullets shown on the update screen. You only edit THIS file and the versionCode/versionName in app/build.gradle.kts — the workflow generates version.json and the GitHub Release automatically.",
   "minimumSupportedVersionCode": 4,
   "releaseNotes": [
-    "New: short ads before export",
-    "Export, audio, formula, motion, transition and frame extraction are unchanged"
+    "Fixed a crash when previewing large or 4K videos in the frame extractor",
+    "Permissions are now asked once, up front, instead of interrupting you mid-task"
   ]
 }
