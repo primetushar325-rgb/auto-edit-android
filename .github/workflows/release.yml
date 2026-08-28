@@ -125,8 +125,9 @@ jobs:
 
       - name: Prepare release assets
         run: |
-          cp app/build/outputs/apk/release/app-release.apk AutoEdit-latest.apk
-          cp app/build/outputs/apk/release/app-release.apk AutoEdit-v${VERSION_NAME}.apk
+          cp "$RELEASE_APK" AutoEdit-latest.apk
+          cp "$RELEASE_APK" AutoEdit-v${VERSION_NAME}.apk
+          ls -la AutoEdit-latest.apk AutoEdit-v${VERSION_NAME}.apk
 
       - name: Create GitHub Release + upload APKs + version.json (tag pushes)
         if: github.ref_type == 'tag'
@@ -149,7 +150,8 @@ jobs:
             echo "version.json unchanged"
           else
             git commit -m "chore: update version.json to v${VERSION_NAME} (code ${VERSION_CODE})"
-            git push origin HEAD:main
+            # Never fail the release because of this convenience step.
+            git push origin HEAD:main || echo "WARN: version.json push skipped (not a fast-forward) — the Release asset is still published."
           fi
 
       - name: Upload CI artifacts (manual runs only)
