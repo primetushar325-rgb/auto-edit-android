@@ -17,7 +17,9 @@ public enum ExportStage {
     RENDERING("Rendering", 26, 78),
     ENCODING("Encoding", 78, 90),
     FINALIZING("Finalizing", 90, 95),
-    SAVING("Saving to Gallery", 95, 100),
+    /** Reading the finished file back to prove it is a real, playable MP4. */
+    VERIFYING("Verifying", 95, 98),
+    SAVING("Saving to Gallery", 98, 100),
     COMPLETE("Complete", 100, 100);
 
     public final String label;

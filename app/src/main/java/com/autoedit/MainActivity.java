@@ -1979,7 +1979,7 @@ public class MainActivity extends Activity {
         ring = new ExportRingView(this);
         ring.setRunning(exportRunning);
         ring.setDone(!exportRunning);
-        ring.setProgress(exportRunning ? lastExportPct / 100f : 1f);
+        ring.setProgress(exportRunning ? Math.max(0f, Math.min(1f, lastExportPct / 100f)) : 1f);
         top.addView(ring, new FrameLayout.LayoutParams(-1, -1));
         ImageView close = AeDesign.iconButton(this, R.drawable.ic_close, "Close", false);
         AeDesign.press(close, () -> {
@@ -2001,12 +2001,13 @@ public class MainActivity extends Activity {
         TextView sub = label("Please wait while we export your video...", 13, AeDesign.MUTED, Typeface.NORMAL);
         sub.setGravity(Gravity.CENTER);
         center.addView(sub);
-        pctBig = label(exportRunning ? lastExportPct + "%" : "100%", 52, AeDesign.ACCENT, Typeface.BOLD);
+        pctBig = label(exportRunning ? Math.max(0, Math.min(100, lastExportPct)) + "%" : "100%",
+                52, AeDesign.ACCENT, Typeface.BOLD);
         pctBig.setGravity(Gravity.CENTER);
         center.addView(pctBig, new LinearLayout.LayoutParams(-1, -2));
         neonBar = new NeonProgressBar(this);
         neonBar.setRunning(exportRunning);
-        neonBar.setProgress(exportRunning ? lastExportPct / 100f : 1f);
+        neonBar.setProgress(exportRunning ? Math.max(0f, Math.min(1f, lastExportPct / 100f)) : 1f);
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, dp(18));
         blp.topMargin = dp(10);
         center.addView(neonBar, blp);
@@ -2031,6 +2032,7 @@ public class MainActivity extends Activity {
             case RENDERING:  return "Rendering frames...";
             case ENCODING:   return "Encoding video...";
             case FINALIZING: return "Finalizing...";
+            case VERIFYING:  return "Verifying the file...";
             case SAVING:     return "Saving to Gallery...";
             case COMPLETE:   return "Export complete!";
             default:         return "Working...";
@@ -2042,7 +2044,11 @@ public class MainActivity extends Activity {
     private void updateExportProgress(int p, ExportStage stage, String m) {
         if (p >= 0 && p < lastExportPct) return; // never move backwards (spec §18)
         lastExportStage = (stage == null ? ExportStage.PREPARING : stage).label;
-        lastExportPct = p;
+        // Failure/cancel arrive as negative sentinels. They must never be stored
+        // as the "current percent", or a later rebuild of the export screen
+        // renders them literally (the user saw "-1%" stuck next to
+        // "Finalizing..."). Keep the last real number on screen instead.
+        lastExportPct = p < 0 ? Math.max(0, lastExportPct) : p;
         lastExportMsg = m == null ? "" : m;
         if (p == 100) {
             exportRunning = false;
@@ -2055,6 +2061,20 @@ public class MainActivity extends Activity {
             exportRunning = false;
             if ("exporting".equals(screen)) showExportFailed(m);
             else toast("Export failed: " + m);
+            if (pctBig != null) { pctBig.setText("—"); pctBig.setTextColor(AeDesign.DANGER); }
+            // Kill any in-flight stage-label animation FIRST. Its withEndAction
+            // runs ~120 ms later and would otherwise overwrite the failure text
+            // with the previous stage ("Finalizing..."), which is exactly the
+            // stuck-looking screen that was being reported: status frozen on
+            // "Finalizing..." while the percent showed an em dash.
+            if (statusBig != null) {
+                statusBig.animate().cancel();
+                statusBig.setAlpha(1f);
+                statusBig.setText("Export failed");
+                statusBig.setTextColor(AeDesign.DANGER);
+            }
+            if (ring != null) { ring.setRunning(false); ring.setDone(false); }
+            if (neonBar != null) neonBar.setRunning(false);
             if (exportProgress != null) { exportPercent.setText("Failed"); exportStage.setText(m); }
             return;
         }
@@ -2087,6 +2107,7 @@ public class MainActivity extends Activity {
     // ------------------------------------------------- export completion
 
     private void showExportComplete(String m) {
+        if (statusBig != null) { statusBig.animate().cancel(); statusBig.setAlpha(1f); }
         if (ring != null) { ring.setRunning(false); ring.setDone(true); }
         if (neonBar != null) { neonBar.setRunning(false); neonBar.setProgress(1f); }
         if (pctBig != null) pctBig.setText("100%");
@@ -2178,6 +2199,7 @@ public class MainActivity extends Activity {
     }
 
     private void showExportFailed(String m) {
+        if (statusBig != null) { statusBig.animate().cancel(); statusBig.setAlpha(1f); }
         if (ring != null) { ring.setRunning(false); ring.setDone(true); }
         if (neonBar != null) { neonBar.setRunning(false); }
         if (pctBig != null) { pctBig.setText("—"); pctBig.setTextColor(AeDesign.DANGER); }

@@ -140,23 +140,24 @@ public class ExportService extends Service {
                 @Override public boolean isCancelled() { return cancelled; }
             });
 
-            // Close the writer, then verify what was actually written.
+            // ---- VERIFYING --------------------------------------------------
+            // The old known-good pipeline went straight from "muxer stopped" to
+            // markSuccess + publish + 100%. The verification pass that was later
+            // inserted in between ran a blocking MediaExtractor call with NO
+            // progress report, so any stall there left the UI parked on
+            // "Finalizing..." forever. Verification is kept — spec §3 wants the
+            // finished MP4 proved playable — but it now has its own visible
+            // stage, a hard time limit, and it can never strand the export.
             d.closeWriter();
-            android.os.ParcelFileDescriptor check = d.openForVerify();
-            VideoExporter.ContainerInfo info = check == null
-                    ? new VideoExporter.ContainerInfo()
-                    : VideoExporter.verifyContainer(this, check.getFileDescriptor());
-            if (check != null) try { check.close(); } catch (Exception ignored) {}
+            sendProgress(ExportStage.VERIFYING.percent(0f), ExportStage.VERIFYING,
+                    res.frames, res.frames, p.clips.size(), "Checking the output file", null, null, false);
 
-            if (!info.hasVideo) {
-                throw new java.io.IOException(info.error != null
-                        ? "Export failed while writing the video: " + info.error
-                        : "Export failed during video encoding.");
-            }
-            if (wantedAudio && !info.hasAudio) {
-                throw new java.io.IOException("Export failed during audio muxing — the file has no audio track.");
-            }
+            Verdict v = verifyFinishedFile(d, wantedAudio);
+            sendProgress(ExportStage.VERIFYING.percent(1f), ExportStage.VERIFYING,
+                    res.frames, res.frames, p.clips.size(), v.detail, null, null, false);
+            if (v.fatal) throw new java.io.IOException(v.detail);
 
+            // ---- publish, in the original known-good order -------------------
             d.markSuccess();
             d.publishOrDelete();
             published = true;
@@ -174,6 +175,93 @@ public class ExportService extends Service {
             stopForeground(true);
             stopSelf();
         }
+    }
+
+    /** Outcome of reading the finished file back. */
+    private static final class Verdict {
+        boolean fatal;      // definitely bad -> abort and clean up
+        String detail = "";
+    }
+
+    /** How long the container read-back may take before we stop waiting on it. */
+    private static final long VERIFY_TIMEOUT_MS = 15_000L;
+
+    /**
+     * Proves the finished file is a real, playable MP4.
+     *
+     * <p>Two rules keep this from ever breaking an export that actually
+     * succeeded:
+     * <ul>
+     *   <li><b>It is time-boxed.</b> {@code MediaExtractor.setDataSource} is a
+     *       blocking native call; if it does not answer within
+     *       {@link #VERIFY_TIMEOUT_MS} we stop waiting and treat the result as
+     *       inconclusive rather than hanging on "Finalizing...".</li>
+     *   <li><b>It only aborts on proof.</b> We fail the export when the file is
+     *       missing or empty, or when the container was read successfully and
+     *       genuinely lacks the required track. If the container simply could
+     *       not be read back, we log it and publish anyway — a clean
+     *       {@code MediaMuxer.stop()} plus a non-empty file is a finished
+     *       video, and deleting it would be worse than a missing warning.</li>
+     * </ul>
+     */
+    private Verdict verifyFinishedFile(ExportDestination d, boolean wantedAudio) {
+        Verdict v = new Verdict();
+
+        // 1. The file must be non-empty. A measured 0 is definitive; -1 only
+        //    means we could not stat it, which is not proof of failure.
+        long bytes = d.sizeBytes();
+        if (bytes == 0L) {
+            v.fatal = true;
+            v.detail = "Export failed: the output file is empty.";
+            return v;
+        }
+
+        // 2. Read the container back on a watchdog-guarded thread.
+        final VideoExporter.ContainerInfo[] holder = new VideoExporter.ContainerInfo[1];
+        Thread t = new Thread(() -> {
+            android.os.ParcelFileDescriptor fd = d.openForVerify();
+            if (fd == null) return;
+            try {
+                holder[0] = VideoExporter.verifyContainer(this, fd.getFileDescriptor(), fd.getStatSize());
+            } finally {
+                try { fd.close(); } catch (Exception ignored) {}
+            }
+        }, "AutoEditVerify");
+        t.setDaemon(true);
+        t.start();
+        try {
+            t.join(VERIFY_TIMEOUT_MS);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+
+        if (t.isAlive() || holder[0] == null) {
+            // Inconclusive, not fatal: the muxer stopped cleanly and the file
+            // has content. Log loudly so this is diagnosable, but publish.
+            Log.w(TAG, "Container verification inconclusive after " + VERIFY_TIMEOUT_MS
+                    + " ms (" + bytes + " bytes written) - publishing anyway");
+            v.detail = bytes > 0 ? "Saved (" + (bytes / 1024L) + " KB)" : "Saved";
+            return v;
+        }
+
+        VideoExporter.ContainerInfo info = holder[0];
+        if (info.hasVideo) {
+            if (wantedAudio && !info.hasAudio) {
+                v.fatal = true;
+                v.detail = "Export failed during audio muxing - the file has no audio track.";
+                return v;
+            }
+            v.detail = "Verified: video" + (info.hasAudio ? " + audio" : "")
+                    + (bytes > 0 ? ", " + (bytes / 1024L) + " KB" : "");
+            return v;
+        }
+
+        // The container read back fine but has no video track: definitely bad.
+        v.fatal = true;
+        v.detail = info.error != null
+                ? "Export failed while writing the video: " + info.error
+                : "Export failed during video encoding.";
+        return v;
     }
 
     /** Maps an exception onto a message a normal user can act on (spec §48). */

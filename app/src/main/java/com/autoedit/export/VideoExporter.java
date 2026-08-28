@@ -252,10 +252,25 @@ public class VideoExporter {
      * half-written container can never be handed to the user (spec §17).
      */
     public static ContainerInfo verifyContainer(Context ctx, java.io.FileDescriptor fd) {
+        return verifyContainer(ctx, fd, -1L);
+    }
+
+    /**
+     * Reads the finished container back and reports which tracks it holds.
+     *
+     * <p>{@code length} is passed through to
+     * {@link MediaExtractor#setDataSource(java.io.FileDescriptor, long, long)}
+     * when it is known. The single-argument overload is unreliable here:
+     * MediaMuxer writes the MP4 {@code moov} box last, so the extractor has to
+     * know the exact extent of the file to seek to it. Passing an explicit
+     * length removes that guesswork.
+     */
+    public static ContainerInfo verifyContainer(Context ctx, java.io.FileDescriptor fd, long length) {
         ContainerInfo info = new ContainerInfo();
         MediaExtractor ex = new MediaExtractor();
         try {
-            ex.setDataSource(fd);
+            if (length > 0L) ex.setDataSource(fd, 0L, length);
+            else ex.setDataSource(fd);
             for (int i = 0; i < ex.getTrackCount(); i++) {
                 MediaFormat f = ex.getTrackFormat(i);
                 String mime = f.getString(MediaFormat.KEY_MIME);

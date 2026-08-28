@@ -302,4 +302,56 @@ public class ExportPipelineTest {
         for (String n : new String[]{"R16_9", "R9_16", "R1_1", "R4_5", "R4_3", "R3_4",
                 "R3_2", "R2_3", "R21_9", "R9_21", "ORIGINAL"}) AspectRatio.valueOf(n);
     }
+
+    /**
+     * Regression guard for the "stuck on Finalizing" bug.
+     *
+     * The old code had no state between FINALIZING and the 100% broadcast, so
+     * the whole close-writer / read-back / publish window was invisible and a
+     * failure inside it looked like a freeze. VERIFYING must exist, must sit
+     * between FINALIZING and SAVING, and the chain must still be contiguous and
+     * strictly increasing so the percentage can never stall or go backwards.
+     */
+    @Test public void verifyingStageExistsBetweenFinalizingAndSaving() {
+        ExportStage[] order = ExportStage.values();
+        int fin = -1, ver = -1, sav = -1;
+        for (int i = 0; i < order.length; i++) {
+            if (order[i] == ExportStage.FINALIZING) fin = i;
+            if (order[i] == ExportStage.VERIFYING) ver = i;
+            if (order[i] == ExportStage.SAVING) sav = i;
+        }
+        assertTrue("FINALIZING missing", fin >= 0);
+        assertTrue("VERIFYING missing - finalization would be invisible", ver >= 0);
+        assertTrue("SAVING missing", sav >= 0);
+        assertTrue("VERIFYING must come after FINALIZING", ver > fin);
+        assertTrue("VERIFYING must come before SAVING", ver < sav);
+    }
+
+    /** Every stage must be strictly ahead of the one before it, with no hole. */
+    @Test public void stageChainIsContiguousAndStrictlyIncreasing() {
+        ExportStage[] order = ExportStage.values();
+        assertEquals(0, order[0].from);
+        for (int i = 0; i < order.length; i++) {
+            assertTrue(order[i] + " has an empty range", order[i].to >= order[i].from);
+            if (i > 0) {
+                assertEquals(order[i] + " must start where " + order[i - 1] + " ended",
+                        order[i - 1].to, order[i].from);
+                assertTrue(order[i] + " must be ahead of " + order[i - 1],
+                        order[i].to > order[i - 1].to || order[i] == ExportStage.COMPLETE);
+            }
+            // percent() must clamp: no stage can report outside its own band
+            assertEquals(order[i].from, order[i].percent(-5f));
+            assertEquals(order[i].to, order[i].percent(99f));
+        }
+        assertEquals(100, order[order.length - 1].to);
+    }
+
+    /**
+     * A NaN fraction (frame/total when total is 0) must not produce a NaN or
+     * negative percentage on screen.
+     */
+    @Test public void nanFractionCannotProduceAnInvalidPercentage() {
+        int pct = ExportStage.RENDERING.percent(Float.NaN);
+        assertTrue("NaN produced " + pct, pct >= 0 && pct <= 100);
+    }
 }

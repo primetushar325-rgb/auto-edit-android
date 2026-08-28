@@ -93,6 +93,28 @@ public class ExportDestination implements Closeable {
         return null;
     }
 
+    /**
+     * Size of the finished file in bytes, or {@code -1} when it cannot be
+     * determined. A returned {@code 0} is meaningful — the muxer produced
+     * nothing — whereas {@code -1} just means we could not stat it, so callers
+     * must not treat it as proof of failure.
+     */
+    public long sizeBytes() {
+        if (file != null && file.exists()) {
+            long n = file.length();
+            if (n > 0) return n;
+        }
+        ParcelFileDescriptor pfd = openForVerify();
+        if (pfd == null) return -1L;
+        try {
+            return pfd.getStatSize();
+        } catch (Exception e) {
+            return -1L;
+        } finally {
+            try { pfd.close(); } catch (Exception ignored) {}
+        }
+    }
+
     public void markSuccess() { success = true; }
 
     /** Publishes on success, deletes on failure. Always closes the writer. */
