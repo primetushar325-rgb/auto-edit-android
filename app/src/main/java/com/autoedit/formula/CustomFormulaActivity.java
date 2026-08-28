@@ -16,6 +16,7 @@ import com.autoedit.engine.MotionCatalog;
 import com.autoedit.model.*;
 import com.autoedit.project.CustomFormulaStore;
 import com.autoedit.ui.AeDesign;
+import com.autoedit.ui.EasingPreviewView;
 import com.autoedit.ui.FormulaPreviewView;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -275,20 +276,13 @@ public class CustomFormulaActivity extends Activity {
         mh.addView(mrow);
         card.addView(mh);
 
-        // Easing
+        // Easing — cards with a live curve graph, not plain text chips (spec §12).
         card.addView(label("Easing", 11, AeDesign.MUTED, Typeface.NORMAL));
         HorizontalScrollView eh = new HorizontalScrollView(this);
         eh.setHorizontalScrollBarEnabled(false);
         LinearLayout erow = row();
         for (Easing e : Easing.values()) {
-            boolean on = st.easing == e;
-            TextView t = label(e.name().replace('_', ' '), 10, on ? 0xffffffff : AeDesign.TEXT, Typeface.BOLD);
-            t.setGravity(Gravity.CENTER);
-            t.setBackground(AeDesign.bg(on ? 0xff12395c : AeDesign.SURFACE_2, dp(12), on ? AeDesign.ACCENT : AeDesign.STROKE, on ? 2 : 1));
-            AeDesign.press(t, () -> { capture(nameF, catF); st.easing = e; showEdit(); });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(36));
-            lp.setMargins(dp(2), dp(2), dp(2), dp(2));
-            erow.addView(t, lp);
+            erow.addView(easingCard(e, st.easing == e, nameF, catF, st));
         }
         eh.addView(erow);
         card.addView(eh);
@@ -500,6 +494,72 @@ public class CustomFormulaActivity extends Activity {
                 String s = e.name().toLowerCase().replace('_', ' ');
                 return Character.toUpperCase(s.charAt(0)) + s.substring(1);
             }
+        }
+    }
+
+    /**
+     * One easing card: looping curve graph + name + a one-line description of
+     * what the curve does + a visible selected state (spec §12). Uses
+     * {@link AeDesign#tap} rather than {@code press} so selecting a card while
+     * the row is still scrolling is never dropped.
+     */
+    private View easingCard(Easing e, boolean on, EditText nameF, EditText catF, Step st) {
+        LinearLayout c = col();
+        c.setBackground(AeDesign.bg(on ? 0xff12395c : AeDesign.SURFACE_2, dp(14),
+                on ? AeDesign.ACCENT : AeDesign.STROKE, on ? 2 : 1));
+        c.setPadding(dp(6), dp(6), dp(6), dp(6));
+
+        EasingPreviewView pv = new EasingPreviewView(this);
+        pv.setEasing(e);
+        c.addView(pv, new LinearLayout.LayoutParams(-1, dp(58)));
+
+        TextView nm = label(e.label(), 10, on ? 0xffffffff : AeDesign.TEXT, Typeface.BOLD);
+        nm.setGravity(Gravity.CENTER);
+        nm.setSingleLine(true);
+        c.addView(nm, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView ds = label(easingDescription(e), 8, AeDesign.MUTED, Typeface.NORMAL);
+        ds.setGravity(Gravity.CENTER);
+        ds.setMaxLines(2);
+        c.addView(ds, new LinearLayout.LayoutParams(-1, -2));
+
+        c.setContentDescription("Easing " + e.label() + (on ? ", selected" : ""));
+        AeDesign.tap(c, () -> { capture(nameF, catF); st.easing = e; showEdit(); });
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(104), -2);
+        lp.setMargins(dp(3), dp(2), dp(3), dp(2));
+        c.setLayoutParams(lp);
+        return c;
+    }
+
+    /** A short, human description of what each easing curve actually does. */
+    private String easingDescription(Easing e) {
+        switch (e) {
+            case LINEAR:     return "Constant speed";
+            case EASE_IN:    return "Starts slow, speeds up";
+            case EASE_OUT:   return "Starts fast, eases to rest";
+            case EASE_IN_OUT:return "Smooth both ends";
+            case CUBIC_IN:   return "Strong slow start";
+            case CUBIC_OUT:  return "Strong gentle stop";
+            case CUBIC:
+            case CUBIC_IN_OUT: return "Default, balanced";
+            case QUART_IN:   return "Very slow start";
+            case QUART_OUT:  return "Very soft stop";
+            case QUART_IN_OUT: return "Dramatic both ends";
+            case QUINT_IN:   return "Extreme slow start";
+            case QUINT_OUT:  return "Extreme soft stop";
+            case QUINT_IN_OUT: return "Extreme both ends";
+            case EXPO_IN:    return "Near-static then bursts";
+            case EXPO_OUT:   return "Bursts then settles";
+            case EXPO_IN_OUT:return "Sharp snap both ends";
+            case QUINT:      return "Legacy quintic curve";
+            case SINE_IN:    return "Very gentle start";
+            case SINE_OUT:   return "Very gentle stop";
+            case SINE_IN_OUT:return "Subtle both ends";
+            case BACK_IN:    return "Winds back, overshoots";
+            case BACK_OUT:   return "Overshoots then settles";
+            case BACK_IN_OUT:return "Overshoots both ends";
+            default:         return e.label();
         }
     }
 

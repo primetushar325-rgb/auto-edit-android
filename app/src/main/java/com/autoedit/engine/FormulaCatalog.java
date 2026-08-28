@@ -57,6 +57,27 @@ public final class FormulaCatalog {
         pattern("F20", "Timeless Retro", "Cinematic", "Slow Ken Burns drift, easy and nostalgic.", "17", "30", "28", "15");
         patternWithTransitions("F21", "Faded Reel", "Premium", "Every clip cross-fades into the next while gently pushing.", TransitionType.CROSS_DISSOLVE, "14", "15", "14", "18");
 
+        // ---- 6-step alternating pattern from the product spec (Zoom Out,
+        // Slide Left, Pan Down, Zoom In, Slide Right, Pan Up) ----
+        pattern("F22", "Spec Cycle", "Cinematic", "Zoom out, slide left, pan down, zoom in, slide right, pan up - then repeat.",
+                "32", "36", "39", "31", "37", "38");
+        pattern("F23", "Premium Subtle", "Premium", "Spec cinematic ranges only: 100-108% zooms with cubic ease.",
+                "31", "32", "33", "34", "48", "49");
+        pattern("F24", "Four Corner Sweep", "Travel", "Diagonal travel through every corner.",
+                "40", "41", "42", "43");
+        pattern("F25", "Ken Burns Cycle", "Ken Burns", "Directional Ken Burns on every clip.",
+                "57", "58", "59", "60", "17");
+        pattern("F26", "Parallax Reel Pro", "Parallax", "Deep parallax in all four directions.",
+                "61", "62", "63", "64");
+        pattern("F27", "Push Pattern", "Social", "Push in from a different direction each clip.",
+                "44", "45", "46", "47", "48");
+        pattern("F28", "Gentle Tilt", "Documentary", "Slow tilts and rotations for interviews.",
+                "65", "66", "67", "33");
+        patternWithTransitions("F29", "Dip Story", "Cinematic", "Each clip dips to black before the next.",
+                TransitionType.DIP_TO_BLACK, "33", "31", "34", "32");
+        patternWithTransitions("F30", "Whip Reel", "Social", "Fast whip transitions between energetic pushes.",
+                TransitionType.WHIP, "48", "44", "49", "45");
+
         pattern("S1", "Cinematic Travel (legacy)", "Travel", "Legacy pattern.", "06", "07", "02", "04");
         pattern("S2", "Story Flow (legacy)", "Story", "Legacy pattern.", "14", "04", "15");
         pattern("S3", "Dynamic Portrait (legacy)", "Portrait", "Legacy pattern.", "06", "02", "07", "04");

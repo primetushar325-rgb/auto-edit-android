@@ -57,6 +57,21 @@ public final class AeDesign {
         return v;
     }
 
+    /**
+     * Instant tap: the action runs on the touch event, the animation plays
+     * afterwards. Selection cards must use this — the animated variant delays
+     * the callback by ~140 ms, which is long enough for a fast tap during a
+     * horizontal card scroll to be dropped and makes cards feel unselectable.
+     */
+    public static void tap(View v, Runnable action) {
+        v.setOnClickListener(x -> {
+            if (action != null) action.run();
+            x.animate().scaleX(.96f).scaleY(.96f).alpha(.9f).setDuration(60)
+                    .withEndAction(() -> x.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(90).start())
+                    .start();
+        });
+    }
+
     public static void press(View v, Runnable action) {
         v.setOnClickListener(x -> x.animate().scaleX(.96f).scaleY(.96f).alpha(.86f).setDuration(55).withEndAction(() -> x.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(85).withEndAction(action).start()).start());
     }

@@ -1,14 +1,17 @@
 {
-  "latestVersionCode": 9,
-  "latestVersionName": "1.2.1",
+  "latestVersionCode": 10,
+  "latestVersionName": "1.3.0",
   "minimumSupportedVersionCode": 4,
   "downloadUrl": "https://github.com/primetushar325-rgb/auto-edit-android/releases/latest/download/AutoEdit-latest.apk",
   "releaseNotes": [
-    "NEW: Formula is now a repeating per-clip motion pattern (clip 1 \u2192 motion 1, clip 2 \u2192 motion 2, then repeats)",
-    "24 motion presets, 20 formula patterns, 20 transitions, 23 effects \u2014 every card has a live preview",
-    "Safe-scale rendering: no more black/empty edges during pan, slide or zoom",
-    "Bottom-sheet tool panels \u2014 the preview no longer shrinks; swipe to close",
-    "Unlimited custom formulas with add / reorder / delete steps",
-    "More reliable export timing, validation, play and share"
+    "Stability: fixed black edges and gaps during pan, push and slide transitions - clips now tile the frame exactly",
+    "64 motion presets, 34 formula patterns, 32 transitions, 41 effects and 26 easing curves - every card has its own live preview",
+    "Card thumbnails are now distinct per option instead of repeating one photo",
+    "Easing picker shows an animated curve graph so you can see the motion before applying it",
+    "Export now verifies the finished MP4 contains a video track (and an audio track when you added music) before saving it",
+    "Saved videos go to Movies/AutoEdit, extracted frames to Pictures/AutoEdit, and both appear in Gallery immediately",
+    "Projects now save text overlays, audio tracks, effect layers and quality settings - nothing is lost on reopen",
+    "Fixed back easings overshooting twice as far as intended",
+    "In-app update: correct version compare, verified downloads and a clear error when something fails"
   ]
 }

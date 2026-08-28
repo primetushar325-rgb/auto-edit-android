@@ -22,8 +22,6 @@ import com.autoedit.model.KeyframeState;
 public class FormulaPreviewView extends View {
     private static final long FRAME_MS = 50;
     private static final float PER_CLIP_SEC = 1.1f;
-    private static Bitmap sharedBitmap;
-    private static int sharedW, sharedH;
     private final FormulaEngine engine = new FormulaEngine();
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final RectF dst = new RectF();
@@ -98,20 +96,13 @@ public class FormulaPreviewView extends View {
         postInvalidateDelayedFrame();
     }
 
+    /**
+     * A formula card shows a CINEMATIC SEQUENCE scene picked from the formula
+     * id, so two different formulas never show the same photograph (spec §13).
+     */
     private Bitmap sharedBitmapFor(int w, int h) {
-        int tw = Math.max(160, w * 2), th = Math.max(240, h * 2);
-        if (sharedBitmap != null && !sharedBitmap.isRecycled() && sharedW == tw && sharedH == th) return sharedBitmap;
-        BitmapFactory.Options o = new BitmapFactory.Options();
-        o.inPreferredConfig = Bitmap.Config.ARGB_8888;
-        Bitmap b = BitmapFactory.decodeResource(getResources(), R.drawable.formula_eiffel, o);
-        if (b == null) return null;
-        if (b.getWidth() < tw * 2 || b.getHeight() < th * 2) {
-            Bitmap s = Bitmap.createScaledBitmap(b, tw, th, true);
-            if (s != b) b.recycle();
-            b = s;
-        }
-        if (sharedBitmap != null && !sharedBitmap.isRecycled()) sharedBitmap.recycle();
-        sharedBitmap = b; sharedW = tw; sharedH = th;
-        return b;
+        int tw = Math.max(96, w), th = Math.max(120, h);
+        String id = formula == null ? null : formula.id;
+        return PreviewArt.get(PreviewArt.Kind.forId(id == null ? "formula" : "F" + id), tw, th);
     }
 }

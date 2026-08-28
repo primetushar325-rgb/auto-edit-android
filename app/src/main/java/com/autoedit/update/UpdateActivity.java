@@ -43,6 +43,11 @@ public class UpdateActivity extends Activity {
     public static final String EXTRA_MIN_CODE = "minCode";
     public static final String EXTRA_DOWNLOAD_URL = "downloadUrl";
     public static final String EXTRA_NOTES = "notes";
+    /** When true the screen is dismissible ("UPDATE NOW / LATER") instead of
+     *  blocking. Mandatory updates pass false (spec §30). */
+    public static final String EXTRA_OPTIONAL = "optional";
+    /** Smallest APK we will accept; anything smaller is a broken download. */
+    private static final long MIN_APK_BYTES = 128 * 1024L;
 
     private int latestCode, minCode;
     private String latestName, downloadUrl;
@@ -52,6 +57,7 @@ public class UpdateActivity extends Activity {
     private ProgressBar bar;
     private TextView pctLabel, statusLabel;
     private boolean downloading = false;
+    private boolean optional = false;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     @Override protected void onCreate(Bundle b) {
@@ -62,6 +68,7 @@ public class UpdateActivity extends Activity {
         minCode = i.getIntExtra(EXTRA_MIN_CODE, latestCode);
         downloadUrl = i.getStringExtra(EXTRA_DOWNLOAD_URL);
         notes = i.getStringArrayListExtra(EXTRA_NOTES);
+        optional = i.getBooleanExtra(EXTRA_OPTIONAL, false);
         buildUi();
     }
 
@@ -82,7 +89,9 @@ public class UpdateActivity extends Activity {
         title.setGravity(Gravity.CENTER);
         root.addView(title);
 
-        TextView sub = AeDesign.text(this, "A new version of AutoEdit is required to continue.", 14, AeDesign.MUTED, Typeface.NORMAL);
+        TextView sub = AeDesign.text(this, optional
+                ? "Version " + (latestName == null ? "" : latestName) + " is available."
+                : "A new version of AutoEdit is required to continue.", 14, AeDesign.MUTED, Typeface.NORMAL);
         sub.setGravity(Gravity.CENTER);
         root.addView(sub);
 
@@ -110,6 +119,14 @@ public class UpdateActivity extends Activity {
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, AeDesign.dp(this, 58));
         blp.topMargin = AeDesign.dp(this, 20);
         root.addView(updateBtn, blp);
+
+        if (optional) {
+            Button later = AeDesign.button(this, "LATER", false);
+            later.setOnClickListener(v -> finish());
+            LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(-1, AeDesign.dp(this, 52));
+            llp.topMargin = AeDesign.dp(this, 8);
+            root.addView(later, llp);
+        }
 
         bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         bar.setMax(100);
@@ -161,7 +178,9 @@ public class UpdateActivity extends Activity {
                     install(apk);
                 } else {
                     pctLabel.setText("");
-                    statusLabel.setText("Download failed — check your connection and try again.");
+                    statusLabel.setText("Update download failed"
+                            + (downloadError == null ? "" : ": " + downloadError)
+                            + " Check your connection and try again.");
                     updateBtn.setEnabled(true);
                     updateBtn.setAlpha(1f);
                 }
@@ -169,7 +188,20 @@ public class UpdateActivity extends Activity {
         }, "AutoEditUpdateDownload").start();
     }
 
+    /** Human reason the last download failed, shown instead of a bare "failed". */
+    private volatile String downloadError = null;
+
+    /** True when the file starts with the ZIP "PK\003\004" local file header. */
+    private static boolean looksLikeApk(File f) {
+        try (InputStream in = new java.io.FileInputStream(f)) {
+            byte[] head = new byte[4];
+            int n = in.read(head);
+            return n == 4 && head[0] == 0x50 && head[1] == 0x4B && head[2] == 0x03 && head[3] == 0x04;
+        } catch (Exception e) { return false; }
+    }
+
     private boolean download(File apk) {
+        downloadError = null;
         HttpURLConnection con = null;
         try {
             File parent = apk.getParentFile();
@@ -180,7 +212,8 @@ public class UpdateActivity extends Activity {
             con.setReadTimeout(30000);
             con.setInstanceFollowRedirects(true);
             con.setRequestProperty("User-Agent", "AutoEdit-Android");
-            if (con.getResponseCode() != 200) return false;
+            int code = con.getResponseCode();
+            if (code != 200) { downloadError = "The server responded " + code + "."; return false; }
             long total = con.getContentLengthLong();
             try (InputStream in = con.getInputStream(); FileOutputStream out = new FileOutputStream(tmp)) {
                 byte[] buf = new byte[64 * 1024];
@@ -198,9 +231,25 @@ public class UpdateActivity extends Activity {
                     }
                 }
             }
-            if (tmp.length() == 0) { tmp.delete(); return false; }
+            // Verify before we hand anything to the installer (spec §31):
+            // HTTP 200 was already checked; now the file must exist, be a
+            // plausible size, and start with the ZIP local-file-header magic
+            // that every real APK begins with.
+            if (!tmp.exists() || tmp.length() < MIN_APK_BYTES) {
+                downloadError = "The download was incomplete (" + (tmp.length() / 1024) + " KB).";
+                //noinspection ResultOfMethodCallIgnored
+                tmp.delete();
+                return false;
+            }
+            if (!looksLikeApk(tmp)) {
+                downloadError = "The downloaded file is not a valid APK.";
+                //noinspection ResultOfMethodCallIgnored
+                tmp.delete();
+                return false;
+            }
             return tmp.renameTo(apk);
         } catch (Exception e) {
+            downloadError = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             return false;
         } finally {
             if (con != null) con.disconnect();
@@ -249,6 +298,7 @@ public class UpdateActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        if (optional) { finish(); return; }
         // Mandatory update: no bypass.
         Toast.makeText(this, "AutoEdit must be updated to continue.", Toast.LENGTH_SHORT).show();
     }

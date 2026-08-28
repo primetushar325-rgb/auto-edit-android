@@ -2,11 +2,14 @@
   "_comment": "Release automation config. minimumSupportedVersionCode: if omitted or 0, defaults to the new versionCode (fully mandatory). Set it LOWER than the new versionCode to allow older versions to keep working. releaseNotes: bullets shown on the update screen. You only edit THIS file and the versionCode/versionName in app/build.gradle.kts — the workflow generates version.json and the GitHub Release automatically.",
   "minimumSupportedVersionCode": 4,
   "releaseNotes": [
-    "NEW: Formula is now a repeating per-clip motion pattern (clip 1 → motion 1, clip 2 → motion 2, then repeats)",
-    "24 motion presets, 20 formula patterns, 20 transitions, 23 effects — every card has a live preview",
-    "Safe-scale rendering: no more black/empty edges during pan, slide or zoom",
-    "Bottom-sheet tool panels — the preview no longer shrinks; swipe to close",
-    "Unlimited custom formulas with add / reorder / delete steps",
-    "More reliable export timing, validation, play and share"
+    "Fixed black edges and gaps during pan, push and slide transitions - clips now tile the frame exactly",
+    "64 motion presets, 34 formula patterns, 32 transitions, 41 effects and 26 easing curves",
+    "Card thumbnails are now distinct per option instead of repeating one photo",
+    "Easing picker shows an animated curve graph so you can see the motion before applying it",
+    "Export verifies the finished MP4 really contains a video track (and an audio track when you added music) before saving",
+    "Saved videos go to Movies/AutoEdit and extracted frames to Pictures/AutoEdit - both appear in Gallery immediately",
+    "Projects now save text overlays, audio tracks, effect layers and quality settings - nothing is lost on reopen",
+    "Fixed back easings overshooting twice as far as intended",
+    "In-app update: correct version compare (1.10.0 > 1.9.0), verified downloads, clear errors instead of silent failure"
   ]
 }

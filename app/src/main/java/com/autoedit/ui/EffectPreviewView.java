@@ -21,8 +21,6 @@ import com.autoedit.model.EffectType;
  */
 public class EffectPreviewView extends View {
     private static final long FRAME_MS = 50;
-    private static Bitmap sharedBitmap;
-    private static int sharedW, sharedH;
 
     private final EffectEngine effects = new EffectEngine();
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
@@ -79,20 +77,38 @@ public class EffectPreviewView extends View {
         tick();
     }
 
+    /**
+     * Each effect card gets its own scene, chosen from the effect name, so the
+     * thumbnails are distinguishable at a glance instead of all showing one
+     * photograph (spec §13). Effects that mostly affect colour read best on the
+     * neon / dark scenes; spatial ones on landscape / city.
+     */
     private Bitmap sharedBitmapFor(int w, int h) {
-        int tw = Math.max(160, w * 2), th = Math.max(240, h * 2);
-        if (sharedBitmap != null && !sharedBitmap.isRecycled() && sharedW == tw && sharedH == th) return sharedBitmap;
-        BitmapFactory.Options o = new BitmapFactory.Options();
-        o.inPreferredConfig = Bitmap.Config.ARGB_8888;
-        Bitmap b = BitmapFactory.decodeResource(getResources(), R.drawable.formula_eiffel, o);
-        if (b == null) return null;
-        if (b.getWidth() < tw * 2 || b.getHeight() < th * 2) {
-            Bitmap s = Bitmap.createScaledBitmap(b, tw, th, true);
-            if (s != b) b.recycle();
-            b = s;
+        int tw = Math.max(96, w), th = Math.max(120, h);
+        PreviewArt.Kind kind;
+        switch (effect == null ? EffectType.NONE : effect) {
+            case VIGNETTE: case FILM_GRAIN: case SUBTLE_NOISE: case FILM_FLICKER:
+            case DUST: case PARTICLES: case FADE:
+                kind = PreviewArt.Kind.DARK; break;
+            case GLOW: case SOFT_GLOW: case BLOOM: case LENS_FLARE: case LIGHT_LEAK:
+            case CINEMATIC_GLOW: case DREAM_GLOW: case HIGHLIGHT_GLOW:
+                kind = PreviewArt.Kind.NEON; break;
+            case BLUR: case GAUSSIAN_BLUR: case MOTION_BLUR: case DIRECTIONAL_BLUR:
+            case SOFT_FOCUS: case DREAM: case CHROMATIC_ABERRATION: case RGB_SHIFT:
+                kind = PreviewArt.Kind.CITY; break;
+            case WARM: case TEMPERATURE: case COOL: case VINTAGE: case SEPIA: case FILM:
+                kind = PreviewArt.Kind.NATURE; break;
+            case BLACK_WHITE: case CONTRAST: case CINEMATIC_SHADOWS: case SHADOWS:
+                kind = PreviewArt.Kind.ARCHITECTURE; break;
+            case BRIGHTNESS: case EXPOSURE: case HIGHLIGHTS: case SHARPEN:
+                kind = PreviewArt.Kind.LANDSCAPE; break;
+            case SATURATION: case COLOR_BOOST:
+                kind = PreviewArt.Kind.ABSTRACT; break;
+            case CINEMATIC:
+                kind = PreviewArt.Kind.PORTRAIT; break;
+            default:
+                kind = PreviewArt.Kind.forId(String.valueOf(effect)); break;
         }
-        if (sharedBitmap != null && !sharedBitmap.isRecycled()) sharedBitmap.recycle();
-        sharedBitmap = b; sharedW = tw; sharedH = th;
-        return b;
+        return PreviewArt.get(kind, tw, th);
     }
 }

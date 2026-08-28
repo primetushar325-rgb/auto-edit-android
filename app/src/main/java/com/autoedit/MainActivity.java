@@ -32,6 +32,7 @@ import com.autoedit.frames.FrameExtractorActivity;
 import com.autoedit.update.UpdateActivity;
 import com.autoedit.update.UpdateChecker;
 import com.autoedit.update.VersionConfig;
+import com.autoedit.update.SemVer;
 
 public class MainActivity extends Activity {
     private static final int PICK_IMAGES = 10, PICK_AUDIO = 11, REQ_CUSTOM_FORMULA = 12;
@@ -71,6 +72,7 @@ public class MainActivity extends Activity {
 
     // --- export progress screen state (survives activity recreation; the
     //     service keeps exporting independently of the UI)
+    private boolean notifPermissionAsked = false;
     private boolean exportRunning = false;
     private int lastExportPct = 0;
     private String lastExportMsg = "";
@@ -85,8 +87,10 @@ public class MainActivity extends Activity {
     private Uri completionUri;
     private String completionFileName;
 
-    // audio preview (real playback in preview; export is video-only)
+    /** Preview playback of the project's audio track. */
     private MediaPlayer audioPlayer;
+    private String lastExportStage = ExportStage.PREPARING.label;
+    private boolean completionHasAudio = false;
 
     private ExportPreset draftPreset = ExportPreset.PORTRAIT_9_16;
     private int draftFps = 30;
@@ -99,9 +103,18 @@ public class MainActivity extends Activity {
     private final Runnable autosave = new Runnable() { public void run() { saveProject(false); handler.postDelayed(this, 30000); } };
     private final BroadcastReceiver exportReceiver = new BroadcastReceiver() {
         public void onReceive(Context c, Intent i) {
-            int p = i.getIntExtra("percent", 0);
-            String m = i.getStringExtra("message");
-            updateExportProgress(p, m);
+            int p = i.getIntExtra(ExportService.EXTRA_PERCENT, 0);
+            String m = i.getStringExtra(ExportService.EXTRA_MESSAGE);
+            String stageName = i.getStringExtra(ExportService.EXTRA_STAGE);
+            ExportStage stage = ExportStage.PREPARING;
+            if (stageName != null) { try { stage = ExportStage.valueOf(stageName); } catch (Exception ignored) {} }
+            String uri = i.getStringExtra(ExportService.EXTRA_URI);
+            String name = i.getStringExtra(ExportService.EXTRA_DISPLAY_NAME);
+            boolean hasAudio = i.getBooleanExtra(ExportService.EXTRA_HAS_AUDIO, false);
+            // The service hands us the FINAL published MediaStore URI, so the
+            // completion screen never has to guess which file was written.
+            if (uri != null) { completionUri = Uri.parse(uri); completionFileName = name; completionHasAudio = hasAudio; }
+            updateExportProgress(p, stage, m);
         }
     };
 
@@ -127,6 +140,15 @@ public class MainActivity extends Activity {
     // ------------------------------------------------- update system (mandatory)
 
     private static long lastUpdateCheckMs = 0;
+    /** versionCode the optional dialog was last shown for, so it never nags. */
+    private static int lastOptionalOffer = -1;
+
+    /** Offers the optional update at most once per version per process. */
+    private boolean updateOfferedFor(int code) {
+        if (lastOptionalOffer == code) return false;
+        lastOptionalOffer = code;
+        return true;
+    }
 
     /** Checks remote version.json. Offline/cached rules live in UpdateChecker;
      *  only a version BELOW minimumSupportedVersionCode opens the blocking
@@ -138,15 +160,22 @@ public class MainActivity extends Activity {
         UpdateChecker.checkAsync(this, (cfg, fromCache) -> {
             if (cfg == null) return; // never reached + no cache → open normally
             int local = UpdateChecker.localVersionCode(this);
-            if (local < cfg.minimumSupportedVersionCode) {
-                Intent i = new Intent(this, UpdateActivity.class);
-                i.putExtra(UpdateActivity.EXTRA_LATEST_CODE, cfg.latestVersionCode);
-                i.putExtra(UpdateActivity.EXTRA_LATEST_NAME, cfg.latestVersionName);
-                i.putExtra(UpdateActivity.EXTRA_MIN_CODE, cfg.minimumSupportedVersionCode);
-                i.putExtra(UpdateActivity.EXTRA_DOWNLOAD_URL, cfg.downloadUrl);
-                if (!cfg.releaseNotes.isEmpty()) i.putStringArrayListExtra(UpdateActivity.EXTRA_NOTES, new ArrayList<>(cfg.releaseNotes));
-                startActivity(i);
-            }
+            // Blocking: below the minimum supported version (spec §30).
+            // Non-blocking: a newer version exists but the current one still
+            // works — the user gets UPDATE NOW / LATER and editing continues.
+            boolean mandatory = local < cfg.minimumSupportedVersionCode;
+            boolean newer = local < cfg.latestVersionCode
+                    || SemVer.isNewer(cfg.latestVersionName, UpdateChecker.localVersionName(this));
+            if (!mandatory && !newer) return;
+            if (!mandatory && !updateOfferedFor(cfg.latestVersionCode)) return;
+            Intent i = new Intent(this, UpdateActivity.class);
+            i.putExtra(UpdateActivity.EXTRA_LATEST_CODE, cfg.latestVersionCode);
+            i.putExtra(UpdateActivity.EXTRA_LATEST_NAME, cfg.latestVersionName);
+            i.putExtra(UpdateActivity.EXTRA_MIN_CODE, cfg.minimumSupportedVersionCode);
+            i.putExtra(UpdateActivity.EXTRA_DOWNLOAD_URL, cfg.downloadUrl);
+            i.putExtra(UpdateActivity.EXTRA_OPTIONAL, !mandatory);
+            if (!cfg.releaseNotes.isEmpty()) i.putStringArrayListExtra(UpdateActivity.EXTRA_NOTES, new ArrayList<>(cfg.releaseNotes));
+            startActivity(i);
         });
     }
 
@@ -536,7 +565,11 @@ public class MainActivity extends Activity {
         hsv.addView(scrollContent);
         tbox.addView(hsv, new LinearLayout.LayoutParams(-1, dp(118)));
         LinearLayout tracks = col();
-        tracks.addView(trackLabel("Audio track", project.audioUri == null ? "no audio" : "linked — plays with preview • export: COMING SOON", project.audioUri != null));
+        project.migrateLegacyAudio();
+        tracks.addView(trackLabel("Audio track",
+                project.audioTracks.isEmpty() ? "no audio"
+                        : audioTrackSummary(project.primaryAudio()),
+                !project.audioTracks.isEmpty()));
         tracks.addView(trackLabel("Text track", project.texts.size() + " text block(s)", false));
         tbox.addView(tracks);
         root.addView(tbox, new LinearLayout.LayoutParams(-1, -2));
@@ -602,8 +635,27 @@ public class MainActivity extends Activity {
         tiles.put(tag, t);
     }
 
+    /** Tag of the tool whose sheet is currently open; null when none is. */
+    private String activeToolTag = null;
+
+    /**
+     * Marks a tool active. Opening a DIFFERENT tool starts a fresh selection;
+     * re-entering the SAME tool (which is what a card tap does when it rebuilds
+     * the sheet to draw the selection ring) KEEPS the user's selection.
+     *
+     * This is the fix for "formula cards are not reliably selectable": the old
+     * code cleared selectedFormulaId on every rebuild, so the card could never
+     * show a selected state and APPLY always said "select a formula first".
+     */
     private void openTool(String tag) {
+        if (!tag.equals(activeToolTag)) resetSheetSelection();
+        activeToolTag = tag;
         for (Map.Entry<String, ToolTile> e : tiles.entrySet()) e.getValue().setActive(e.getKey().equals(tag));
+    }
+
+    private void resetSheetSelection() {
+        selectedMotionId = null; selectedFormulaId = null;
+        selectedEffect = null; selectedTransition = null;
     }
 
     // ---------------------------------------------------------------- bottom sheet
@@ -612,11 +664,14 @@ public class MainActivity extends Activity {
         return sheet;
     }
 
-    /** Opens the floating bottom sheet (editor keeps its full size behind it). */
+    /**
+     * Opens the floating bottom sheet (the editor keeps its full size behind
+     * it). Selection is NOT cleared here — {@link #openTool} owns that, so a
+     * rebuild triggered by a card tap preserves what the user picked.
+     */
     private void openSheet(String title) {
-        selectedMotionId = null; selectedFormulaId = null; selectedEffect = null; selectedTransition = null;
         PanelSheet s = sheet();
-        s.setOnDismiss(() -> clearActiveTool());
+        s.setOnDismiss(() -> { clearActiveTool(); resetSheetSelection(); });
         s.show();
         s.setTitle(title);
     }
@@ -634,21 +689,44 @@ public class MainActivity extends Activity {
         s.content().addView(label(text, 12, AeDesign.MUTED, Typeface.NORMAL));
     }
 
-    /** A card with a live preview, title + subtitle; tap = SELECT only (no mutation). */
+    /**
+     * A card with a live preview, name, category and a clear SELECTED state.
+     * Tapping one is a pure UI selection — it never mutates the project
+     * (spec §42: selection != application).
+     */
     interface CardOnTap { void onTap(); }
+
     private LinearLayout previewCard(View preview, String title, String subtitle, boolean selected) {
         LinearLayout card = col();
         card.setPadding(dp(8), dp(8), dp(8), dp(8));
-        card.addView(preview, new LinearLayout.LayoutParams(dp(112), dp(132)));
-        TextView nm = label(title, 12, AeDesign.TEXT, Typeface.BOLD);
+        FrameLayout shot = new FrameLayout(this);
+        shot.addView(preview, new FrameLayout.LayoutParams(dp(112), dp(112)));
+        if (selected) {
+            ImageView tick = new ImageView(this);
+            tick.setImageResource(R.drawable.ic_check);
+            tick.setColorFilter(0xff041018);
+            tick.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            tick.setPadding(dp(3), dp(3), dp(3), dp(3));
+            tick.setBackground(AeDesign.bg(AeDesign.ACCENT, dp(10), 0, 0));
+            tick.setContentDescription("Selected");
+            FrameLayout.LayoutParams tlp = new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP | Gravity.END);
+            tlp.setMargins(0, dp(4), dp(4), 0);
+            shot.addView(tick, tlp);
+        }
+        card.addView(shot, new LinearLayout.LayoutParams(dp(112), dp(112)));
+        TextView nm = label(title, 12, selected ? AeDesign.ACCENT : AeDesign.TEXT, Typeface.BOLD);
         nm.setGravity(Gravity.CENTER);
+        nm.setMaxLines(2);
         card.addView(nm, new LinearLayout.LayoutParams(-1, -2));
         if (subtitle != null) {
             TextView sub = label(subtitle, 10, AeDesign.MUTED, Typeface.NORMAL);
             sub.setGravity(Gravity.CENTER);
+            sub.setMaxLines(1);
             card.addView(sub, new LinearLayout.LayoutParams(-1, -2));
         }
-        card.setBackground(AeDesign.bg(AeDesign.SURFACE, dp(18), selected ? AeDesign.ACCENT : AeDesign.STROKE, selected ? 2 : 1));
+        card.setBackground(AeDesign.bg(selected ? 0xff102D4A : AeDesign.SURFACE, dp(18),
+                selected ? AeDesign.ACCENT : AeDesign.STROKE, selected ? 2 : 1));
+        if (selected) card.setElevation(dp(6));
         return card;
     }
 
@@ -678,6 +756,7 @@ public class MainActivity extends Activity {
 
 
     private void clearActiveTool() {
+        activeToolTag = null;
         for (ToolTile t : tiles.values()) t.setActive(false);
     }
 
@@ -883,12 +962,15 @@ public class MainActivity extends Activity {
                 if (!cat.equals(m.category)) continue;
                 MotionPreviewView mpv = new MotionPreviewView(this);
                 mpv.setMotion(formulas.byId(m.id));
-                boolean isSel = sameFormulaId(selected >= 0 && selected < project.clips.size() ? project.clips.get(selected).formula : null, m.id);
+                boolean isSel = selectedMotionId != null
+                        ? selectedMotionId.equals(m.id)
+                        : sameFormulaId(selected >= 0 && selected < project.clips.size() ? project.clips.get(selected).formula : null, m.id);
                 final String id = m.id;
                 LinearLayout card = previewCard(mpv, m.name, cat, isSel);
-                AeDesign.press(card, () -> {
+                card.setContentDescription("Motion " + m.name + (isSel ? ", selected" : ""));
+                AeDesign.tap(card, () -> {
                     selectedMotionId = id;
-                    motionPanel(); // rebuild to show selection ring
+                    motionPanel(); // rebuild to show the selection ring
                 });
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
                 lp.setMargins(dp(4), dp(4), dp(4), dp(6));
@@ -952,9 +1034,11 @@ public class MainActivity extends Activity {
         Formula f = formulas.byId(id);
         FormulaPreviewView pv = new FormulaPreviewView(this);
         pv.setFormula(f);
-        String sub = f.isPattern() ? f.category + " • " + f.patternSize() + "-clip" : "Single";
-        LinearLayout card = previewCard(pv, f.name, sub, formulaApplied(id));
-        AeDesign.press(card, () -> { selectedFormulaId = id; selectedMotionId = null; formulaBatchPanel(); });
+        String sub = f.isPattern() ? f.category + " • " + f.patternSize() + "-clip" : "Single motion";
+        boolean isSel = selectedFormulaId != null ? selectedFormulaId.equals(id) : formulaApplied(id);
+        LinearLayout card = previewCard(pv, f.name, sub, isSel);
+        card.setContentDescription("Formula " + f.name + (isSel ? ", selected" : ""));
+        AeDesign.tap(card, () -> { selectedFormulaId = id; selectedMotionId = null; formulaBatchPanel(); });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
         lp.setMargins(dp(4), dp(4), dp(4), dp(6));
         parent.addView(card, lp);
@@ -985,8 +1069,10 @@ public class MainActivity extends Activity {
                 : (o.optJSONArray("keyframes") != null ? Math.max(1, o.optJSONArray("keyframes").length() - 1) : 1);
         FormulaPreviewView pv = new FormulaPreviewView(this);
         pv.setFormula(CustomFormulaStore.toFormula(o));
-        LinearLayout card = previewCard(pv, name, o.optString("category", "Custom") + " • " + steps + "-clip", formulaApplied(id));
-        AeDesign.press(card, () -> { selectedFormulaId = id; formulaBatchPanel(); });
+        boolean isSel = selectedFormulaId != null ? selectedFormulaId.equals(id) : formulaApplied(id);
+        LinearLayout card = previewCard(pv, name, o.optString("category", "Custom") + " • " + steps + "-clip", isSel);
+        card.setContentDescription("Custom formula " + name + (isSel ? ", selected" : ""));
+        AeDesign.tap(card, () -> { selectedFormulaId = id; formulaBatchPanel(); });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
         lp.setMargins(dp(4), dp(4), dp(4), dp(6));
         parent.addView(card, lp);
@@ -1026,9 +1112,11 @@ public class MainActivity extends Activity {
         for (TransitionType t : vals) {
             TransitionPreviewView tpv = new TransitionPreviewView(this);
             tpv.setTransition(t);
+            boolean isSel = selectedTransition != null ? selectedTransition == t : current == t;
             LinearLayout card = previewCard(tpv, TransitionEngine.label(t),
-                    t == TransitionType.NONE ? "No transition" : "Preview", current == t);
-            AeDesign.press(card, () -> { selectedTransition = t; transitionPanel(); });
+                    t == TransitionType.NONE ? "No transition" : "Between clips", isSel);
+            card.setContentDescription("Transition " + TransitionEngine.label(t) + (isSel ? ", selected" : ""));
+            AeDesign.tap(card, () -> { selectedTransition = t; transitionPanel(); });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
             lp.setMargins(dp(4), dp(4), dp(4), dp(6));
             row.addView(card, lp);
@@ -1061,35 +1149,186 @@ public class MainActivity extends Activity {
                 new Runnable[]{() -> addText("Title"), () -> addText("Subtitle"), () -> addText("Caption"), () -> addText("YouTube Title"), () -> addText("Shorts Caption"), () -> addText("Documentary Lower Third"), () -> addText("Thanks for watching")});
     }
 
+    /**
+     * Audio tools (spec §20, §47). This is a REAL audio track: everything set
+     * here is honoured by the preview player AND by the exporter, which decodes,
+     * trims, loops, fades and mixes the track into an AAC stream inside the MP4.
+     */
     private void audioPanel() {
         openTool("audio");
         if (panelHost == null) return;
+        project.migrateLegacyAudio();
         panelHost.removeAllViews();
         panelHost.addView(label("Audio / Voice-over", 16, AeDesign.TEXT, Typeface.BOLD));
+
         LinearLayout grid = rowWrap();
-        addAction(grid, project.audioUri == null ? "Import audio" : "Change audio", this::pickAudio);
-        addAction(grid, "Mute / remove", () -> { pushUndo(); project.audioUri = null; saveProject(true); showEditor(); });
-        if (project.audioUri != null) {
-            TextView info = label("Audio is linked. Press Play in the transport bar — the voice-over plays in sync with the preview timeline.\nExport: video-only in this build — audio muxing is COMING SOON (never faked).", 12, AeDesign.MUTED, Typeface.NORMAL);
-            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(-1, -2);
-            ilp.setMargins(dp(4), dp(8), dp(4), dp(8));
-            grid.addView(info, ilp);
+        addAction(grid, project.audioTracks.isEmpty() ? "Import audio" : "Change audio", this::pickAudio);
+        if (!project.audioTracks.isEmpty()) {
+            addAction(grid, "Preview", this::previewAudioNow);
+            addAction(grid, "Remove audio", () -> {
+                pushUndo(); project.audioTracks.clear(); project.audioUri = null;
+                releaseAudio(); saveProject(true); showEditor();
+            });
         }
         panelHost.addView(grid);
+
+        AudioTrack t = project.primaryAudio();
+        if (t == null) {
+            panelHost.addView(label("No audio yet. Import a track and it will be mixed into the exported MP4.",
+                    12, AeDesign.MUTED, Typeface.NORMAL));
+            return;
+        }
+
+        panelHost.addView(label("Volume  " + Math.round(t.volume * 100) + "%", 13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(0, 100, Math.round(t.volume * 100), v -> {
+            pushUndo(); t.volume = v / 100f; saveProject(true); audioPanel();
+        }));
+
+        panelHost.addView(label("Start on timeline  " + fmt(t.startSec), 13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(0, Math.max(1, Math.round(project.totalDurationSec())),
+                Math.round(t.startSec), v -> { pushUndo(); t.startSec = v; saveProject(true); audioPanel(); }));
+
+        panelHost.addView(label("Trim from  " + fmt(t.trimStartSec), 13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(0, Math.max(1, audioLengthSec(t)), Math.round(t.trimStartSec), v -> {
+            pushUndo();
+            t.trimStartSec = v;
+            if (t.trimEndSec > 0 && t.trimEndSec <= t.trimStartSec) t.trimEndSec = 0;
+            saveProject(true); audioPanel();
+        }));
+
+        panelHost.addView(label("Trim to  " + (t.trimEndSec > 0 ? fmt(t.trimEndSec) : "end of file"),
+                13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(0, Math.max(1, audioLengthSec(t)), Math.round(t.trimEndSec), v -> {
+            pushUndo(); t.trimEndSec = v; saveProject(true); audioPanel();
+        }));
+
+        panelHost.addView(label("Fade in  " + fmt(t.fadeInSec), 13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(0, 10, Math.round(t.fadeInSec), v -> {
+            pushUndo(); t.fadeInSec = v; saveProject(true); audioPanel();
+        }));
+
+        panelHost.addView(label("Fade out  " + fmt(t.fadeOutSec), 13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(0, 10, Math.round(t.fadeOutSec), v -> {
+            pushUndo(); t.fadeOutSec = v; saveProject(true); audioPanel();
+        }));
+
+        LinearLayout flags = rowWrap();
+        addChoice(flags, t.loop ? "✓ Loop audio" : "Loop audio", t.loop, () -> {
+            pushUndo(); t.loop = !t.loop; saveProject(true); audioPanel();
+        });
+        addChoice(flags, t.muted ? "✓ Muted" : "Mute", t.muted, () -> {
+            pushUndo(); t.muted = !t.muted; saveProject(true); audioPanel();
+        });
+        panelHost.addView(flags);
+
+        panelHost.addView(label("Plays in sync with the preview timeline and is encoded into the "
+                + "exported MP4 as a real AAC track.", 12, AeDesign.MUTED, Typeface.NORMAL));
+    }
+
+    /** Length of the loaded audio file in seconds, probed once and cached. */
+    private int audioLengthSec(AudioTrack t) {
+        if (t == null || t.uri == null) return 30;
+        if (t.sourceDurationMs <= 0) {
+            MediaPlayer probe = null;
+            try {
+                probe = MediaPlayer.create(this, Uri.parse(t.uri));
+                if (probe != null) { t.sourceDurationMs = probe.getDuration(); saveProject(false); }
+            } catch (Exception e) { Log.w(TAG, "Audio probe failed", e); }
+            finally { if (probe != null) try { probe.release(); } catch (Exception ignored) {} }
+        }
+        return t.sourceDurationMs > 0 ? Math.max(1, (int) (t.sourceDurationMs / 1000)) : 30;
+    }
+
+    /** Plays the track once from its trim start so the user can audition it. */
+    private void previewAudioNow() {
+        AudioTrack t = project.primaryAudio();
+        if (t == null) { toast("No audio to preview"); return; }
+        releaseAudio();
+        try {
+            audioPlayer = MediaPlayer.create(this, Uri.parse(t.uri));
+            if (audioPlayer == null) throw new IOException("MediaPlayer unavailable");
+            audioPlayer.setVolume(t.effectiveVolume(), t.effectiveVolume());
+            if (t.trimStartSec > 0) audioPlayer.seekTo((int) (t.trimStartSec * 1000));
+            audioPlayer.start();
+            toast("Playing audio");
+        } catch (Exception e) {
+            Log.e(TAG, "Audio preview failed", e);
+            toast("Audio could not be decoded: " + (e.getMessage() == null ? "unsupported format" : e.getMessage()));
+        }
+    }
+
+    /** A labelled SeekBar; commits on release so it does not thrash undo. */
+    private android.widget.SeekBar slider(int min, int max, int value, java.util.function.IntConsumer onCommit) {
+        android.widget.SeekBar sb = new android.widget.SeekBar(this);
+        sb.setMax(Math.max(1, max - min));
+        sb.setProgress(Math.max(0, Math.min(max - min, value - min)));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(40));
+        lp.setMargins(dp(4), dp(2), dp(4), dp(8));
+        sb.setLayoutParams(lp);
+        sb.setContentDescription("Value between " + min + " and " + max);
+        sb.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(android.widget.SeekBar s, int progress, boolean fromUser) {}
+            @Override public void onStartTrackingTouch(android.widget.SeekBar s) {}
+            @Override public void onStopTrackingTouch(android.widget.SeekBar s) { onCommit.accept(min + s.getProgress()); }
+        });
+        return sb;
     }
 
     private void canvasPanel() {
         openTool("canvas");
-        showPanel("Canvas",
-                new String[]{"Fit (letterbox)", "Fill (crop)", "16:9", "9:16", "1:1", "4:5"},
-                new Runnable[]{
-                        () -> { project.fitMode = FitMode.FIT; saveProject(true); refreshAfterCanvasChange(); },
-                        () -> { project.fitMode = FitMode.FILL; saveProject(true); refreshAfterCanvasChange(); },
-                        () -> setPreset(ExportPreset.LANDSCAPE_16_9),
-                        () -> setPreset(ExportPreset.PORTRAIT_9_16),
-                        () -> setPreset(ExportPreset.SQUARE_1_1),
-                        () -> setPreset(ExportPreset.PORTRAIT_4_5)
-                });
+        if (panelHost == null) return;
+        panelHost.removeAllViews();
+        panelHost.addView(label("Canvas — aspect ratio", 16, AeDesign.TEXT, Typeface.BOLD));
+        LinearLayout ratios = rowWrap();
+        for (AspectRatio ar : AspectRatio.values()) {
+            if (!ar.isFixed()) continue;
+            addChoice(ratios, (project.aspectRatio == ar ? "✓ " : "") + ar.label.split(" ")[0],
+                    project.aspectRatio == ar, () -> {
+                        pushUndo();
+                        project.aspectRatio = ar;
+                        applyAspectToPreset(ar);
+                        saveProject(true);
+                        refreshAfterCanvasChange();
+                    });
+        }
+        panelHost.addView(ratios);
+
+        panelHost.addView(label("Background / framing", 16, AeDesign.TEXT, Typeface.BOLD));
+        LinearLayout fits = rowWrap();
+        for (FitMode fm : FitMode.values()) {
+            addChoice(fits, (project.fitMode == fm ? "✓ " : "") + fm.label, project.fitMode == fm, () -> {
+                pushUndo(); project.fitMode = fm; saveProject(true); refreshAfterCanvasChange();
+            });
+        }
+        panelHost.addView(fits);
+        panelHost.addView(label("Every mode paints a background layer first, so no mode ever shows a black wedge.",
+                12, AeDesign.MUTED, Typeface.NORMAL));
+    }
+
+    /** Maps a canvas aspect ratio onto the nearest export preset. */
+    private void applyAspectToPreset(AspectRatio ar) {
+        switch (ar) {
+            case R16_9: project.applyExportPreset(ExportPreset.LANDSCAPE_16_9); break;
+            case R9_16: project.applyExportPreset(ExportPreset.PORTRAIT_9_16); break;
+            case R1_1:  project.applyExportPreset(ExportPreset.SQUARE_1_1); break;
+            case R4_5:  project.applyExportPreset(ExportPreset.PORTRAIT_4_5); break;
+            case R4_3:  project.applyExportPreset(ExportPreset.CLASSIC_4_3); break;
+            default:
+                project.updateSizeForAspect(project.height);
+                break;
+        }
+        draftPreset = project.exportPreset;
+    }
+
+    /** Short human summary of the audio track for the timeline label. */
+    private String audioTrackSummary(AudioTrack t) {
+        if (t == null) return "no audio";
+        StringBuilder sb = new StringBuilder();
+        sb.append(t.muted ? "muted" : Math.round(t.volume * 100) + "%");
+        if (t.fadeInSec > 0 || t.fadeOutSec > 0) sb.append(" • fade ").append(Math.round(t.fadeInSec)).append("/").append(Math.round(t.fadeOutSec)).append("s");
+        if (t.loop) sb.append(" • loop");
+        sb.append(" • in export");
+        return sb.toString();
     }
 
     private void filtersPanel() {
@@ -1121,9 +1360,11 @@ public class MainActivity extends Activity {
         for (EffectType t : list) {
             EffectPreviewView epv = new EffectPreviewView(this);
             epv.setEffect(t, 0.7f);
+            boolean isSel = selectedEffect != null ? selectedEffect == t : current == t;
             LinearLayout card = previewCard(epv, EffectEngine.label(t),
-                    t == EffectType.NONE ? "Reset" : "Preview", current == t);
-            AeDesign.press(card, () -> { selectedEffect = t; effectsPanelOrRefresh(title); });
+                    t == EffectType.NONE ? "Reset" : "Layerable", isSel);
+            card.setContentDescription("Effect " + EffectEngine.label(t) + (isSel ? ", selected" : ""));
+            AeDesign.tap(card, () -> { selectedEffect = t; effectsPanelOrRefresh(title); });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
             lp.setMargins(dp(4), dp(4), dp(4), dp(6));
             row.addView(card, lp);
@@ -1143,14 +1384,29 @@ public class MainActivity extends Activity {
     private void applyEffectTo(int clipIdx, EffectType e) {
         if (clipIdx < 0 || clipIdx >= project.clips.size()) return;
         pushUndo();
-        project.clips.get(clipIdx).effect = e;
+        project.clips.get(clipIdx).setSingleEffect(e, project.clips.get(clipIdx).effectIntensity);
         saveProject(true);
         if (preview != null) preview.invalidate();
     }
 
+    /** ONE undo entry for the whole batch (spec §34). */
     private void applyEffectToAll(EffectType e) {
         pushUndo();
-        for (TimelineClip c : project.clips) c.effect = e;
+        for (TimelineClip c : project.clips) c.setSingleEffect(e, c.effectIntensity);
+        saveProject(true);
+        if (preview != null) preview.invalidate();
+    }
+
+    /**
+     * Stacks one more effect on top of what the clip already has (spec §45).
+     * Still a single undo entry.
+     */
+    private void addEffectLayerToSelection(EffectType e) {
+        if (e == null || e == EffectType.NONE) return;
+        pushUndo();
+        if (selected >= 0 && selected < project.clips.size())
+            project.clips.get(selected).addEffectLayer(e, 0.6f);
+        else for (TimelineClip c : project.clips) c.addEffectLayer(e, 0.6f);
         saveProject(true);
         if (preview != null) preview.invalidate();
     }
@@ -1237,27 +1493,6 @@ public class MainActivity extends Activity {
     }
 
     /** Fast: assigns pre-resolved formula sequences per index. State only — nothing is rendered here. */
-    private void applyFormulaSequenceToAll(String mode) {
-        pushUndo();
-        String[] story = {"06", "08", "07", "09"};
-        String[] doc = {"14", "04", "15", "02"};
-        String[] cine = {"06", "05", "07", "01"};
-        String[] pan = {"04", "02", "01", "05"};
-        String[] slow = {"18", "14", "18", "15"};
-        String[] use = story;
-        if ("documentary".equals(mode)) use = doc;
-        else if ("cinematic".equals(mode)) use = cine;
-        else if ("pan".equals(mode)) use = pan;
-        else if ("slow".equals(mode)) use = slow;
-        for (int i = 0; i < project.clips.size(); i++) {
-            project.clips.get(i).formula = formulas.byId("none".equals(mode) ? "00" : use[i % use.length]);
-        }
-        saveProject(true);
-        buildTimeline(false);
-        if (preview != null) preview.invalidate();
-        toast("Formula applied to " + project.clips.size() + " clips (state only)");
-    }
-
     private void applyTransition(TransitionType t) {
         if (selected >= 0) { applyTransitionAt(selected, t); return; }
         pushUndo();
@@ -1281,11 +1516,11 @@ public class MainActivity extends Activity {
 
     private void applyEffect(EffectType e) {
         pushUndo();
-        if (selected >= 0) project.clips.get(selected).effect = e;
-        else for (TimelineClip c : project.clips) c.effect = e;
+        if (selected >= 0) project.clips.get(selected).setSingleEffect(e, project.clips.get(selected).effectIntensity);
+        else for (TimelineClip c : project.clips) c.setSingleEffect(e, c.effectIntensity);
         saveProject(true);
         if (preview != null) preview.invalidate();
-        toast("Effect: " + e.name() + " → " + (selected >= 0 ? "Clip " + project.clips.get(selected).index : "ALL clips"));
+        toast("Effect: " + EffectEngine.label(e) + " → " + (selected >= 0 ? "Clip " + project.clips.get(selected).index : "ALL clips"));
     }
 
     private void duplicateClip() {
@@ -1295,6 +1530,8 @@ public class MainActivity extends Activity {
         TimelineClip n = new TimelineClip(c.uri, selected + 2, c.formula);
         n.setDurationMs(c.durationMs);
         n.effect = c.effect;
+        n.effectIntensity = c.effectIntensity;
+        for (EffectLayer l : c.effectLayers) n.effectLayers.add(l.copy());
         n.transition = c.transition;
         n.transitionDurationSec = c.transitionDurationSec;
         project.clips.add(selected + 1, n);
@@ -1387,20 +1624,31 @@ public class MainActivity extends Activity {
         if (playButton != null && preview != null) playButton.setImageResource(preview.playing ? R.drawable.ic_pause : R.drawable.ic_play);
     }
 
-    /** Real preview audio: MediaPlayer bound to the same timeline time. */
-    private void startAudioAt(float t) {
+    /**
+     * Preview playback bound to the same timeline time the preview renders,
+     * honouring the track's own volume, mute, trim start and start offset so
+     * what you hear is what the exporter will mix (spec §20).
+     */
+    private void startAudioAt(float timeSec) {
         releaseAudio();
-        if (project.audioUri == null) return;
+        AudioTrack track = project.primaryAudio();
+        if (track == null || track.isSilent()) return;
+        float into = timeSec - track.startSec;
+        if (into < 0f) return; // the track has not started on the timeline yet
         try {
-            audioPlayer = MediaPlayer.create(this, Uri.parse(project.audioUri));
+            audioPlayer = MediaPlayer.create(this, Uri.parse(track.uri));
             if (audioPlayer == null) throw new IOException("MediaPlayer unavailable");
+            float v = track.effectiveVolume();
+            audioPlayer.setVolume(v, v);
+            audioPlayer.setLooping(track.loop);
+            int sourceMs = (int) ((track.trimStartSec + into) * 1000f);
             int dur = audioPlayer.getDuration();
-            if (t * 1000f > 300 && t * 1000f < dur - 300) audioPlayer.seekTo((int) (t * 1000f));
+            if (sourceMs > 300 && sourceMs < dur - 300) audioPlayer.seekTo(sourceMs);
             audioPlayer.start();
         } catch (Exception e) {
             audioPlayer = null;
             Log.e(TAG, "Audio preview failed", e);
-            toast("Audio preview failed: " + (e.getMessage() == null ? "error" : e.getMessage()));
+            toast("Audio could not be decoded: " + (e.getMessage() == null ? "unsupported format" : e.getMessage()));
         }
     }
 
@@ -1416,26 +1664,56 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- media pickers
 
+    /**
+     * Images come from the system PHOTO PICKER on Android 13+, which needs no
+     * runtime permission at all and shows the user's real gallery, albums and
+     * recents (spec §21, §22). Older devices fall back to ACTION_GET_CONTENT,
+     * which opens the same system document/gallery UI — never a browser.
+     */
     private void pickImages() {
         try {
-            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            i.addCategory(Intent.CATEGORY_OPENABLE);
-            i.setType("image/*");
-            i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            Intent i;
+            if (Build.VERSION.SDK_INT >= 33) {
+                i = new Intent(MediaStore.ACTION_PICK_IMAGES);
+                i.setType("image/*");
+                i.putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX,
+                        Math.max(2, MediaStore.getPickImagesMaxLimit()));
+            } else {
+                i = new Intent(Intent.ACTION_GET_CONTENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("image/*");
+                i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            }
             i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
             startActivityForResult(i, PICK_IMAGES);
         } catch (Exception e) {
-            Log.e(TAG, "Image picker failed", e);
-            toast("Could not open image picker");
+            Log.e(TAG, "Photo picker failed, falling back", e);
+            try {
+                Intent fallback = new Intent(Intent.ACTION_GET_CONTENT);
+                fallback.addCategory(Intent.CATEGORY_OPENABLE);
+                fallback.setType("image/*");
+                fallback.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                fallback.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivityForResult(fallback, PICK_IMAGES);
+            } catch (Exception e2) {
+                Log.e(TAG, "Image picker failed", e2);
+                toast("Could not open the photo picker");
+            }
         }
     }
 
+    /** Audio uses the system document picker (the photo picker is images only). */
     private void pickAudio() {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("audio/*");
-        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        startActivityForResult(i, PICK_AUDIO);
+        try {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("audio/*");
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(i, PICK_AUDIO);
+        } catch (Exception e) {
+            Log.e(TAG, "Audio picker failed", e);
+            toast("Could not open the audio picker");
+        }
     }
 
     @Override protected void onActivityResult(int req, int res, Intent data) {
@@ -1477,10 +1755,23 @@ public class MainActivity extends Activity {
             pushUndo();
             Uri u = data.getData();
             try { getContentResolver().takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) {}
-            project.audioUri = u.toString();
+            project.migrateLegacyAudio();
+            project.audioTracks.clear();
+            AudioTrack t = new AudioTrack(u.toString());
+            // Probe the real duration once, so trim/loop decisions and the
+            // exporter's timeline math are based on facts, not guesses.
+            MediaPlayer probe = null;
+            try {
+                probe = MediaPlayer.create(this, u);
+                if (probe != null) t.sourceDurationMs = probe.getDuration();
+            } catch (Exception e) { Log.w(TAG, "Audio probe failed", e); }
+            finally { if (probe != null) try { probe.release(); } catch (Exception ignored) {} }
+            project.audioTracks.add(t);
             saveProject(true);
             if ("editor".equals(screen)) showEditor();
-            toast("Audio linked — press Play to hear it");
+            toast(t.sourceDurationMs > 0
+                    ? "Audio added (" + fmt(t.sourceDurationMs / 1000f) + ") — it will be mixed into the export"
+                    : "Audio added — it will be mixed into the export");
         }
     }
 
@@ -1554,7 +1845,11 @@ public class MainActivity extends Activity {
         summary.addView(label("PROJECT", 12, AeDesign.MUTED, Typeface.NORMAL));
         summary.addView(label(project.name, 20, AeDesign.TEXT, Typeface.BOLD));
         summary.addView(label("Duration: " + fmt(project.totalDurationSec()) + " • Clips: " + project.clips.size() + " • " + project.width + "×" + project.height + " @ " + project.fps + " FPS", 14, AeDesign.MUTED, Typeface.NORMAL));
-        summary.addView(label("Audio export: COMING SOON — this pipeline encodes the video track only.", 12, 0xffe0b46b, Typeface.NORMAL));
+        project.migrateLegacyAudio();
+        summary.addView(label(project.audioTracks.isEmpty()
+                ? "Audio: none — the MP4 will contain the video stream only."
+                : "Audio: " + audioTrackSummary(project.primaryAudio()) + " — encoded into the MP4.",
+                12, project.audioTracks.isEmpty() ? AeDesign.MUTED : 0xff7ce0a2, Typeface.NORMAL));
         root.addView(summary);
         root.addView(label("Aspect Ratio / Resolution", 18, AeDesign.TEXT, Typeface.BOLD));
         LinearLayout presets = rowWrap();
@@ -1639,11 +1934,29 @@ public class MainActivity extends Activity {
         i.putExtra("fps", project.fps);
         i.putExtra("fitMode", project.fitMode.name());
         saveProject(true);
-        startService(i);
+        ensureNotificationPermission();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
+        else startService(i);
         exportRunning = true;
         lastExportPct = 1;
         lastExportMsg = "Preparing...";
         showExportProgressScreen();
+    }
+
+    /**
+     * Android 13+ requires POST_NOTIFICATIONS before the export service can
+     * show its progress notification. Asked once per install, with the reason
+     * up front, and never re-asked after a denial (spec §22) — the export works
+     * fine without it, the notification is only a keep-alive + status.
+     */
+    private void ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return;
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED) return;
+        if (notifPermissionAsked) return;
+        notifPermissionAsked = true;
+        toast("Allow notifications to see export progress in the background");
+        requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 9001);
     }
 
     /**
@@ -1697,7 +2010,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, dp(18));
         blp.topMargin = dp(10);
         center.addView(neonBar, blp);
-        statusBig = label(exportRunning ? exportStatusText(lastExportPct) : "Export complete!", 13, AeDesign.MUTED, Typeface.NORMAL);
+        statusBig = label(exportRunning ? lastExportStage : "Export complete!", 13, AeDesign.MUTED, Typeface.NORMAL);
         statusBig.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
         slp.topMargin = dp(12);
@@ -1708,14 +2021,27 @@ public class MainActivity extends Activity {
         if (!exportRunning) showExportComplete(lastExportMsg);
     }
 
-    private String exportStatusText(int p) {
-        if (p < 30) return "Preparing your video...";
-        if (p < 70) return "Processing your video...";
-        if (p < 95) return "Almost done... Please wait";
-        return "Finalizing your video...";
+    /** Human status line for a stage. The percentage itself always comes from
+     *  real completed work inside that stage — never from a timer. */
+    private String exportStatusText(ExportStage stage) {
+        switch (stage == null ? ExportStage.PREPARING : stage) {
+            case PREPARING:  return "Preparing your video...";
+            case OPTIMIZING: return "Optimizing images...";
+            case AUDIO:      return "Preparing audio...";
+            case RENDERING:  return "Rendering frames...";
+            case ENCODING:   return "Encoding video...";
+            case FINALIZING: return "Finalizing...";
+            case SAVING:     return "Saving to Gallery...";
+            case COMPLETE:   return "Export complete!";
+            default:         return "Working...";
+        }
     }
 
-    private void updateExportProgress(int p, String m) {
+    private void updateExportProgress(int p, String m) { updateExportProgress(p, ExportStage.PREPARING, m); }
+
+    private void updateExportProgress(int p, ExportStage stage, String m) {
+        if (p >= 0 && p < lastExportPct) return; // never move backwards (spec §18)
+        lastExportStage = (stage == null ? ExportStage.PREPARING : stage).label;
         lastExportPct = p;
         lastExportMsg = m == null ? "" : m;
         if (p == 100) {
@@ -1737,7 +2063,7 @@ public class MainActivity extends Activity {
             if (neonBar != null) neonBar.setProgress(p / 100f);
             if (ring != null) ring.setProgress(p / 100f);
             if (statusBig != null) {
-                String s = exportStatusText(p);
+                String s = exportStatusText(stage);
                 if (!s.equals(statusBig.getText().toString())) {
                     statusBig.animate().alpha(0f).setDuration(120).withEndAction(() -> {
                         statusBig.setText(s);
@@ -1755,11 +2081,7 @@ public class MainActivity extends Activity {
 
     private String stage(int p, String m) {
         if (p < 0) return m;
-        if (p < 10) return "Optimizing images... " + m;
-        if (p < 45) return "Rendering frames... " + m;
-        if (p < 85) return "Encoding... " + m;
-        if (p < 100) return "Saving to Gallery... " + m;
-        return m;
+        return lastExportStage + (m == null || m.isEmpty() ? "" : " — " + m);
     }
 
     // ------------------------------------------------- export completion
@@ -1770,11 +2092,16 @@ public class MainActivity extends Activity {
         if (pctBig != null) pctBig.setText("100%");
         if (statusBig != null) { statusBig.setText("Export complete!"); statusBig.setTextColor(0xff7ce0a2); }
 
-        // find the saved video in the Gallery (MediaStore) for thumbnail/actions
-        String fileName = null;
-        if (m != null) { int i = m.lastIndexOf('/'); if (i >= 0) fileName = m.substring(i + 1).trim(); }
+        // The service already sent the FINAL published MediaStore URI. Only if
+        // that is missing (e.g. the activity was recreated mid-export) do we
+        // fall back to a display-name lookup.
+        String fileName = completionFileName;
+        if (fileName == null && m != null) {
+            int i = m.lastIndexOf('/');
+            if (i >= 0) fileName = m.substring(i + 1).trim();
+        }
         completionFileName = fileName;
-        completionUri = fileName == null ? null : findExportedVideo(fileName);
+        if (completionUri == null && fileName != null) completionUri = findExportedVideo(fileName);
 
         // completion card: thumbnail + actions (replaces the status line)
         LinearLayout holder = (LinearLayout) statusBig.getParent();
@@ -1789,7 +2116,8 @@ public class MainActivity extends Activity {
         done.addView(completionThumb, new LinearLayout.LayoutParams(dp(120), dp(120)));
         completionThumb.setScaleX(0.6f); completionThumb.setScaleY(0.6f);
         completionThumb.animate().scaleX(1f).scaleY(1f).setDuration(380).start();
-        TextView saved = label(fileName != null ? fileName : "Saved to Movies/AutoEdit", 12, AeDesign.MUTED, Typeface.NORMAL);
+        TextView saved = label("Saved to Movies/AutoEdit/" + (fileName == null ? "" : fileName)
+                + (completionHasAudio ? "\nVideo + audio" : "\nVideo"), 12, AeDesign.MUTED, Typeface.NORMAL);
         saved.setGravity(Gravity.CENTER);
         done.addView(saved, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout btns = row();
@@ -1818,15 +2146,18 @@ public class MainActivity extends Activity {
      * once here, then the UI refreshes automatically when granted.
      */
     private void wireCompletionVideo() {
-        if (!"exporting".equals(screen) || completionFileName == null) return;
-        if (completionUri == null) completionUri = findExportedVideo(completionFileName);
-        if (completionUri == null && Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(android.Manifest.permission.READ_MEDIA_VIDEO)
-                    != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{android.Manifest.permission.READ_MEDIA_VIDEO}, REQ_VIDEO_PERM);
-            return;
-        }
+        if (!"exporting".equals(screen)) return;
         if (completionThumb == null) return;
+        // We already hold the URI this app inserted, so no READ_MEDIA_VIDEO
+        // permission is needed to play or share it — only to load its
+        // thumbnail, which is why the permission request is now optional and
+        // can never leave the Play button without a click listener.
+        if (completionUri == null && completionFileName != null) completionUri = findExportedVideo(completionFileName);
+        boolean wantThumbPerm = Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(android.Manifest.permission.READ_MEDIA_VIDEO)
+                   != PackageManager.PERMISSION_GRANTED;
+        if (completionUri == null && wantThumbPerm)
+            requestPermissions(new String[]{android.Manifest.permission.READ_MEDIA_VIDEO}, REQ_VIDEO_PERM);
         Bitmap t = completionUri == null ? null : loadVideoThumb(completionUri);
         if (t != null) completionThumb.setImageBitmap(t);
         else completionThumb.setImageResource(R.drawable.ic_play);
@@ -1949,7 +2280,9 @@ public class MainActivity extends Activity {
         root.addView(cf, cflp);
         showPanelIntoRoot("Editor", new String[]{"Default aspect ratio: " + draftPreset.label, "Default FPS: " + draftFps, "Auto-save: ON (every 30s)", "Undo / Redo: 40 steps"});
         showPanelIntoRoot("Playback", new String[]{"Preview quality: Optimized (sampled decode + LRU)", "Preview FPS: " + project.fps, "Audio in preview: ON (plays with Play)"});
-        showPanelIntoRoot("Export", new String[]{"Resolution: " + project.width + "×" + project.height, "Pipeline: MediaCodec H.264 → MediaMuxer MP4 (protected)", "Audio export: COMING SOON (video-only)"});
+        showPanelIntoRoot("Export", new String[]{"Resolution: " + project.width + "×" + project.height,
+                "Pipeline: MediaCodec H.264 → MediaMuxer MP4",
+                "Audio: " + (project.hasAudio() ? "AAC mixed into the MP4" : "none")});
         showPanelIntoRoot("Storage", new String[]{"Export location: Movies/AutoEdit", "Image cache: app cache dir (auto-cleaned)"});
         showPanelIntoRoot("About", new String[]{"Auto-Edit v" + UpdateChecker.localVersionName(this), "Offline-first: media never leaves the device"});
     }

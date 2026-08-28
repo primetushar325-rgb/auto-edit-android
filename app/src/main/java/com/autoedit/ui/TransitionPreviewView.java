@@ -26,8 +26,6 @@ import com.autoedit.model.TransitionType;
 public class TransitionPreviewView extends View {
     private static final long FRAME_MS = 50;
     private static final float LOOP_SEC = 2.2f;
-    private static Bitmap sharedBitmap;
-    private static int sharedW, sharedH;
 
     private final TransitionEngine engine = new TransitionEngine();
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
@@ -56,6 +54,7 @@ public class TransitionPreviewView extends View {
         int w = getWidth(), h = getHeight();
         if (w < 10 || h < 10) return;
         Bitmap bmp = sharedBitmapFor(w, h);
+        Bitmap bmpIn = incomingBitmapFor(w, h);
         Path card = new Path();
         card.addRoundRect(0, 0, w, h, 14, 14, Path.Direction.CW);
         canvas.save();
@@ -73,8 +72,8 @@ public class TransitionPreviewView extends View {
         float span = 0.7f;
         float p = loop < 0.12f ? 0f : loop > 0.12f + span ? 1f : (loop - 0.12f) / span;
 
-        // use two visually distinct tints so the two layers read as "clips"
-        // (a subtle overlay), without inventing any motion math.
+        // Two genuinely different scenes so the two halves read as separate
+        // clips and the direction of travel is obvious (spec §13).
         TransitionEngine.Transform out = engine.outgoing(type, p);
         TransitionEngine.Transform in = engine.incoming(type, p);
 
@@ -100,7 +99,8 @@ public class TransitionPreviewView extends View {
             }
             canvas.clipPath(reveal);
         }
-        drawLayer(canvas, bmp, dw, dh, w, h, in.dx, in.dy, in.scale, in.alpha, 0x33b07a2a, true, null);
+        drawLayer(canvas, bmpIn == null ? bmp : bmpIn, dw, dh, w, h,
+                in.dx, in.dy, in.scale, in.alpha, 0x33b07a2a, true, null);
         if (masked && saved >= 0) canvas.restoreToCount(saved);
 
         // flash overlay
@@ -129,20 +129,19 @@ public class TransitionPreviewView extends View {
         paint.setAlpha(255);
     }
 
+    /**
+     * A transition needs TWO distinguishable frames to read at all, so the
+     * outgoing panel uses one scene and the incoming panel another (spec §13:
+     * "two different visual frames, clear directional preview").
+     */
     private Bitmap sharedBitmapFor(int w, int h) {
-        int tw = Math.max(160, w * 2), th = Math.max(240, h * 2);
-        if (sharedBitmap != null && !sharedBitmap.isRecycled() && sharedW == tw && sharedH == th) return sharedBitmap;
-        BitmapFactory.Options o = new BitmapFactory.Options();
-        o.inPreferredConfig = Bitmap.Config.ARGB_8888;
-        Bitmap b = BitmapFactory.decodeResource(getResources(), R.drawable.formula_eiffel, o);
-        if (b == null) return null;
-        if (b.getWidth() < tw * 2 || b.getHeight() < th * 2) {
-            Bitmap s = Bitmap.createScaledBitmap(b, tw, th, true);
-            if (s != b) b.recycle();
-            b = s;
-        }
-        if (sharedBitmap != null && !sharedBitmap.isRecycled()) sharedBitmap.recycle();
-        sharedBitmap = b; sharedW = tw; sharedH = th;
-        return b;
+        int tw = Math.max(96, w), th = Math.max(120, h);
+        return PreviewArt.get(PreviewArt.Kind.forId("T" + (type == null ? "NONE" : type.name())), tw, th);
+    }
+
+    /** The contrasting scene for the incoming half of the transition. */
+    private Bitmap incomingBitmapFor(int w, int h) {
+        int tw = Math.max(96, w), th = Math.max(120, h);
+        return PreviewArt.get(PreviewArt.Kind.forId("T2" + (type == null ? "NONE" : type.name())), tw, th);
     }
 }

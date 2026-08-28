@@ -1,63 +1,227 @@
 package com.autoedit.export;
 
-import android.app.*;import android.content.*;import android.os.*;import com.autoedit.model.*;import com.autoedit.project.ProjectStore;
+import android.app.*;
+import android.content.*;
+import android.net.Uri;
+import android.os.*;
+import android.util.Log;
 
+import com.autoedit.model.*;
+import com.autoedit.project.ProjectStore;
+
+
+/**
+ * Runs the export off the UI thread and reports real progress.
+ *
+ * The service owns the whole publish lifecycle (spec §17, §24):
+ * <ol>
+ *   <li>create a pending MediaStore row in {@code Movies/AutoEdit/}</li>
+ *   <li>run {@link VideoExporter} into that row's file descriptor</li>
+ *   <li>close the descriptor, then RE-OPEN the finished file and verify it
+ *       really contains a video track (and an audio track when the project has
+ *       audio)</li>
+ *   <li>only on success clear {@code IS_PENDING} so the Gallery can see it</li>
+ *   <li>broadcast the FINAL content URI so the completion screen plays the
+ *       real file — never a temp path, a stale URI or a half-written row</li>
+ * </ol>
+ *
+ * On any failure the pending row is deleted, so no broken file is ever left in
+ * the Gallery, and the real reason is broadcast to the UI (spec §48).
+ */
 public class ExportService extends Service {
-    public static final String ACTION_START="com.autoedit.START_EXPORT", ACTION_CANCEL="com.autoedit.CANCEL_EXPORT", ACTION_PROGRESS="com.autoedit.PROGRESS";
-    private volatile boolean cancelled=false;
+    private static final String TAG = "AutoEditExportSvc";
 
-    @Override public int onStartCommand(Intent intent,int flags,int startId){
-        if(intent!=null && ACTION_CANCEL.equals(intent.getAction())){ cancelled=true; stopSelf(); return START_NOT_STICKY; }
-        if(intent!=null && ACTION_START.equals(intent.getAction())){
-            cancelled=false;
-            int w=intent.getIntExtra("w",1920), h=intent.getIntExtra("h",1080), fps=intent.getIntExtra("fps",30);
-            String fit=intent.getStringExtra("fitMode");
-            new Thread(()->runExport(w,h,fps,fit),"AutoEditExportThread").start();
+    public static final String ACTION_START = "com.autoedit.START_EXPORT";
+    public static final String ACTION_CANCEL = "com.autoedit.CANCEL_EXPORT";
+    public static final String ACTION_PROGRESS = "com.autoedit.PROGRESS";
+
+    public static final String EXTRA_PERCENT = "percent";
+    public static final String EXTRA_STAGE = "stage";
+    public static final String EXTRA_FRAME = "frame";
+    public static final String EXTRA_TOTAL = "total";
+    public static final String EXTRA_CLIP = "clip";
+    public static final String EXTRA_MESSAGE = "message";
+    /** Present exactly once, on success: the published MediaStore URI. */
+    public static final String EXTRA_URI = "uri";
+    public static final String EXTRA_DISPLAY_NAME = "displayName";
+    public static final String EXTRA_HAS_AUDIO = "hasAudio";
+
+    private static final String CHANNEL_ID = "autoedit.export";
+    private static final int NOTIF_ID = 0x4145;
+
+    private volatile boolean cancelled = false;
+    private volatile boolean running = false;
+
+    /**
+     * An export is long-running, so it must be a foreground service or Android
+     * will kill it part-way through and leave a truncated file. The channel is
+     * low-importance: the on-screen export view already shows the detail, the
+     * notification just keeps the job alive and visible if the user leaves.
+     */
+    @Override public void onCreate() {
+        super.onCreate();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null && nm.getNotificationChannel(CHANNEL_ID) == null) {
+                NotificationChannel ch = new NotificationChannel(
+                        CHANNEL_ID, "Video export", NotificationManager.IMPORTANCE_LOW);
+                ch.setDescription("Progress of the current video export");
+                ch.setShowBadge(false);
+                nm.createNotificationChannel(ch);
+            }
+        }
+    }
+
+    private Notification notification(int percent, String message) {
+        Intent open = new Intent(this, com.autoedit.MainActivity.class);
+        open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent pi = PendingIntent.getActivity(this, 0, open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification.Builder b;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            b = new Notification.Builder(this, CHANNEL_ID);
+        } else {
+            b = new Notification.Builder(this);
+        }
+        b.setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setContentTitle("Exporting video")
+                .setContentText(message == null ? "Preparing..." : message)
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setProgress(100, Math.max(0, Math.min(100, percent)), false);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) b.setColor(0xff49A8FF);
+        return b.build();
+    }
+
+    @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_CANCEL.equals(intent.getAction())) {
+            cancelled = true;
+            return START_NOT_STICKY;
+        }
+        if (intent != null && ACTION_START.equals(intent.getAction())) {
+            if (running) return START_NOT_STICKY; // never two exports at once
+            cancelled = false;
+            running = true;
+            startForeground(NOTIF_ID, notification(0, "Preparing..."));
+            int w = intent.getIntExtra("w", 1920), h = intent.getIntExtra("h", 1080);
+            int fps = intent.getIntExtra("fps", 30);
+            String fit = intent.getStringExtra("fitMode");
+            new Thread(() -> runExport(w, h, fps, fit), "AutoEditExportThread").start();
         }
         return START_NOT_STICKY;
     }
 
-    private void runExport(int w,int h,int fps,String fit){
+    private void runExport(int w, int h, int fps, String fit) {
         ExportDestination destination = null;
-        try{
-            EditProject p=new ProjectStore(this).load();
-            p.width=w; p.height=h; p.fps=fps;
-            if(fit!=null) try{ p.fitMode=FitMode.valueOf(fit); }catch(Exception ignored){}
-            String fileName="AutoEdit_"+System.currentTimeMillis()+".mp4";
+        boolean published = false;
+        try {
+            EditProject p = new ProjectStore(this).load();
+            p.width = w; p.height = h; p.fps = fps;
+            if (fit != null) { try { p.fitMode = FitMode.valueOf(fit); } catch (Exception ignored) { p.fitMode = FitMode.FILL; } }
+            p.migrateLegacyAudio();
+
+            String fileName = "AutoEdit_" + System.currentTimeMillis() + ".mp4";
             destination = ExportDestination.create(this, fileName);
-            ExportOptions o=new ExportOptions();
-            o.outputFileDescriptor=destination.fileDescriptor();
-            o.outputPath=destination.file!=null ? destination.file.getAbsolutePath() : null;
-            o.width=w; o.height=h; o.fps=fps; o.fitMode=p.fitMode;
-            o.bitrate=w>=3840?35_000_000:w>=2560?18_000_000:w>=1920?8_000_000:4_000_000;
-            ExportDestination finalDestination = destination;
-            new VideoExporter(this).export(p,o,new VideoExporter.Listener(){
-                public void onProgress(ExportProgress pr){ sendProgress(pr.percent, pr.currentFrame, pr.totalFrames, pr.currentClip, pr.message); }
-                public boolean isCancelled(){ return cancelled; }
+
+            ExportOptions o = new ExportOptions();
+            o.outputFileDescriptor = destination.fileDescriptor();
+            o.outputPath = destination.file != null ? destination.file.getAbsolutePath() : null;
+            o.width = w; o.height = h; o.fps = fps; o.fitMode = p.fitMode;
+            o.bitrate = w >= 3840 ? 35_000_000 : w >= 2560 ? 18_000_000 : w >= 1920 ? 8_000_000 : 4_000_000;
+
+            boolean wantedAudio = p.hasAudio();
+            ExportDestination d = destination;
+            VideoExporter.Result res = new VideoExporter(this).export(p, o, new VideoExporter.Listener() {
+                @Override public void onProgress(ExportProgress pr) {
+                    sendProgress(pr.percent, pr.stage, pr.currentFrame, pr.totalFrames, pr.currentClip, pr.message,
+                            null, null, false);
+                }
+                @Override public boolean isCancelled() { return cancelled; }
             });
-            finalDestination.markSuccess();
-            sendProgress(100, p.totalFrames(), p.totalFrames(), p.clips.size(), "Saved to Gallery: Movies/AutoEdit/" + fileName);
-        }catch(Exception e){
-            String msg=e.getMessage()==null?e.getClass().getSimpleName():e.getMessage();
-            sendProgress(-1,0,0,0,categorize(msg));
+
+            // Close the writer, then verify what was actually written.
+            d.closeWriter();
+            android.os.ParcelFileDescriptor check = d.openForVerify();
+            VideoExporter.ContainerInfo info = check == null
+                    ? new VideoExporter.ContainerInfo()
+                    : VideoExporter.verifyContainer(this, check.getFileDescriptor());
+            if (check != null) try { check.close(); } catch (Exception ignored) {}
+
+            if (!info.hasVideo) {
+                throw new java.io.IOException(info.error != null
+                        ? "Export failed while writing the video: " + info.error
+                        : "Export failed during video encoding.");
+            }
+            if (wantedAudio && !info.hasAudio) {
+                throw new java.io.IOException("Export failed during audio muxing — the file has no audio track.");
+            }
+
+            d.markSuccess();
+            d.publishOrDelete();
+            published = true;
+
+            sendProgress(100, ExportStage.COMPLETE, res.frames, res.frames, p.clips.size(),
+                    "Movies/AutoEdit/" + fileName, d.uri, fileName, res.hasAudio);
+        } catch (Exception e) {
+            Log.e(TAG, "Export failed", e);
+            if (destination != null && !published) destination.publishOrDelete();
+            boolean wasCancel = cancelled || e instanceof java.io.InterruptedIOException;
+            sendProgress(wasCancel ? -2 : -1, ExportStage.PREPARING, 0, 0, 0,
+                    wasCancel ? "Export cancelled" : categorize(e), null, null, false);
         } finally {
-            if(destination!=null) destination.publishOrDelete();
+            running = false;
+            stopForeground(true);
             stopSelf();
         }
     }
 
-    private String categorize(String msg){
-        String m=msg==null?"":msg.toLowerCase();
-        if(m.contains("storage") || m.contains("space")) return "Insufficient storage: "+msg;
-        if(m.contains("encoder")) return "Encoder unavailable: "+msg;
-        if(m.contains("permission") || m.contains("denied")) return "Permission problem: "+msg;
-        if(m.contains("unsupported") || m.contains("corrupt") || m.contains("invalid source")) return "Unsupported/invalid media: "+msg;
-        if(m.contains("cancel")) return "Export cancelled";
-        return "Rendering error: "+msg;
+    /** Maps an exception onto a message a normal user can act on (spec §48). */
+    private String categorize(Throwable e) {
+        String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        String m = msg.toLowerCase();
+        if (m.contains("cancel")) return "Export cancelled";
+        if (m.contains("storage") || m.contains("space")) return "Not enough storage space to export this video.";
+        if (m.contains("audio")) return "Audio could not be decoded: " + msg;
+        if (m.contains("encoder")) return "Export failed during video encoding: " + msg;
+        if (m.contains("permission") || m.contains("denied")) return "Permission problem: " + msg;
+        if (m.contains("unsupported") || m.contains("corrupt") || m.contains("invalid source"))
+            return "Unsupported/invalid media: " + msg;
+        return "Rendering error: " + msg;
     }
 
-    private void sendProgress(int percent,long frame,long total,int clip,String message){
-        Intent i=new Intent(ACTION_PROGRESS); i.setPackage(getPackageName()); i.putExtra("percent",percent); i.putExtra("frame",frame); i.putExtra("total",total); i.putExtra("clip",clip); i.putExtra("message",message); sendBroadcast(i);
+    /** Last percent pushed to the notification, so it is not updated per frame. */
+    private int lastNotifPercent = -1;
+
+    private void sendProgress(int percent, ExportStage stage, long frame, long total, int clip,
+                              String message, Uri uri, String displayName, boolean hasAudio) {
+        // Mirror the real progress into the foreground notification. Only whole
+        // percents are worth a notify() call.
+        if (running && percent >= 0 && percent != lastNotifPercent) {
+            lastNotifPercent = percent;
+            try {
+                NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                if (nm != null) nm.notify(NOTIF_ID, notification(percent, message));
+            } catch (Exception e) {
+                Log.w(TAG, "Could not update export notification", e);
+            }
+        }
+        Intent i = new Intent(ACTION_PROGRESS);
+        i.setPackage(getPackageName());
+        i.putExtra(EXTRA_PERCENT, percent);
+        i.putExtra(EXTRA_STAGE, stage == null ? ExportStage.PREPARING.name() : stage.name());
+        i.putExtra(EXTRA_FRAME, frame);
+        i.putExtra(EXTRA_TOTAL, total);
+        i.putExtra(EXTRA_CLIP, clip);
+        i.putExtra(EXTRA_MESSAGE, message == null ? "" : message);
+        if (uri != null) {
+            i.putExtra(EXTRA_URI, uri.toString());
+            i.putExtra(EXTRA_DISPLAY_NAME, displayName);
+            i.putExtra(EXTRA_HAS_AUDIO, hasAudio);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        }
+        sendBroadcast(i);
     }
-    @Override public IBinder onBind(Intent intent){ return null; }
+
+    @Override public IBinder onBind(Intent intent) { return null; }
 }

@@ -33,7 +33,8 @@ public class DiskBitmapCache {
                     done[0]++;
                     if (listener != null) {
                         ExportProgress p = new ExportProgress();
-                        p.percent = Math.min(10, done[0] * 10 / Math.max(1, project.clips.size()));
+                        p.stage = ExportStage.OPTIMIZING;
+                        p.percent = ExportStage.OPTIMIZING.percent(done[0] / (float) Math.max(1, project.clips.size()));
                         p.currentClip = done[0];
                         p.totalFrames = project.totalFrames();
                         p.message = "Optimizing images " + done[0] + " / " + project.clips.size();

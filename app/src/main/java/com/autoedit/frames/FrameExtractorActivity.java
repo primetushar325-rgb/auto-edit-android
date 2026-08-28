@@ -14,6 +14,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.StatFs;
+import android.util.Log;
 import android.util.LruCache;
 import android.view.Gravity;
 import android.view.View;
@@ -41,6 +42,7 @@ import java.util.*;
 public class FrameExtractorActivity extends Activity {
     private static final int PICK_VIDEO = 40;
     private static final int SAVE_ZIP = 41;
+    private static final String TAG = "AutoEditFrames";
 
     // survive rotation/config change while the service keeps working
     private static String sTempDirPath;
@@ -552,6 +554,70 @@ public class FrameExtractorActivity extends Activity {
         for (File k : kids) if (k.isFile() && k.length() > 0) frames.add(k);
     }
 
+    // ================================================================ GALLERY
+
+    /**
+     * Saves the selected frames directly into the phone Gallery (spec §23).
+     *
+     * Android 10+: MediaStore insert into {@code Pictures/AutoEdit} with
+     * IS_PENDING cleared on success. Below that: the real public directory plus
+     * a MediaScanner pass. Either way the frame is visible in the Gallery app
+     * immediately — never only in app-private storage.
+     */
+    private void saveFramesToGallery() {
+        final List<File> list = new ArrayList<>();
+        for (File f : frames) if (selected.isEmpty() || selected.contains(f.getName())) list.add(f);
+        if (list.isEmpty()) { toast("Select at least one frame"); return; }
+
+        new AlertDialog.Builder(this)
+                .setTitle("Save to Gallery")
+                .setMessage("Save " + list.size() + " frame(s) to Pictures/AutoEdit or DCIM/AutoEdit?")
+                .setPositiveButton("Pictures/AutoEdit", (d, w) -> doSaveToGallery(list, GallerySaver.Folder.PICTURES))
+                .setNeutralButton("DCIM/AutoEdit", (d, w) -> doSaveToGallery(list, GallerySaver.Folder.DCIM))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void doSaveToGallery(List<File> list, GallerySaver.Folder folder) {
+        if (zipInfo != null) zipInfo.setText("Saving " + list.size() + " frame(s) to Gallery...");
+        final int[] ok = {0};
+        final String[] firstError = {null};
+        final GallerySaver.Saved[] first = {null};
+        new Thread(() -> {
+            for (File f : list) {
+                android.graphics.Bitmap bmp = null;
+                try {
+                    bmp = FrameUtils.decodeSampledFile(f, 4096);
+                    if (bmp == null) throw new IOException("Frame could not be decoded.");
+                    String base = f.getName();
+                    int dot = base.lastIndexOf('.');
+                    String stem = dot > 0 ? base.substring(0, dot) : base;
+                    GallerySaver.Saved saved = GallerySaver.save(this, bmp, stem, format, quality, folder);
+                    if (first[0] == null) first[0] = saved;
+                    ok[0]++;
+                } catch (Exception e) {
+                    if (firstError[0] == null)
+                        firstError[0] = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                } finally {
+                    if (bmp != null && !bmp.isRecycled()) bmp.recycle();
+                }
+            }
+            runOnUiThread(() -> {
+                if (ok[0] == 0) {
+                    if (zipInfo != null) zipInfo.setText("❌  Save failed: " + firstError[0]);
+                    toast("Save failed: " + firstError[0]);
+                    return;
+                }
+                GallerySaver.Saved s0 = first[0];
+                String msg = "✓  Saved to Gallery\n" + ok[0] + " image(s) → " + s0.folderLabel
+                        + (list.size() != ok[0] ? "\n(" + (list.size() - ok[0]) + " failed)" : "");
+                if (zipInfo != null) zipInfo.setText(msg);
+                toast("✓ Saved " + ok[0] + " to " + s0.folderLabel);
+                Log.i(TAG, "Saved to gallery uri=" + s0.uri + " name=" + s0.displayName);
+            });
+        }, "AutoEditGallerySave").start();
+    }
+
     // ===================================================================== ZIP
 
     private void createZip() {
@@ -586,6 +652,8 @@ public class FrameExtractorActivity extends Activity {
         actions.setTag("zip_actions");
         Button save = AeDesign.button(this, "SAVE TO DEVICE", true);
         AeDesign.press(save, this::saveZip);
+        Button gallery = AeDesign.button(this, "SAVE TO GALLERY", true);
+        AeDesign.press(gallery, this::saveFramesToGallery);
         actions.addView(save, new LinearLayout.LayoutParams(0, dp(52), 1));
         Button share = AeDesign.button(this, "SHARE ZIP", false);
         AeDesign.press(share, this::shareZip);
@@ -598,6 +666,10 @@ public class FrameExtractorActivity extends Activity {
         olp.leftMargin = dp(6);
         actions.addView(open, olp);
         root.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout galleryRow = row();
+        galleryRow.setTag("zip_actions");
+        galleryRow.addView(gallery, new LinearLayout.LayoutParams(-1, dp(52)));
+        root.addView(galleryRow, new LinearLayout.LayoutParams(-1, -2));
     }
 
     private void saveZip() {
