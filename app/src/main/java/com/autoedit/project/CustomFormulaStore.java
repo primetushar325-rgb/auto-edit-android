@@ -3,6 +3,7 @@ package com.autoedit.project;
 import android.content.Context;
 import android.content.SharedPreferences;
 import com.autoedit.engine.FormulaEngine;
+import com.autoedit.engine.MotionCatalog;
 import com.autoedit.model.*;
 import org.json.*;
 
@@ -80,7 +81,18 @@ public class CustomFormulaStore {
         } catch (Exception ignored) {}
     }
 
-    /** Rebuilds the real Formula object from a stored custom-formula JSON. */
+    /** Number of pattern steps in a stored formula JSON (new steps[] or legacy keyframes). */
+    public static int stepCount(JSONObject o) {
+        JSONArray steps = o.optJSONArray("steps");
+        if (steps != null && steps.length() > 0) return steps.length();
+        JSONArray kfs = o.optJSONArray("keyframes");
+        return kfs != null ? Math.max(1, kfs.length() - 1) : 1;
+    }
+
+    /** Rebuilds the real Formula object from a stored custom-formula JSON.
+     *  Supports the NEW per-clip {@code steps[]} format and migrates the LEGACY
+     *  {@code keyframes[]} format (each adjacent keyframe pair becomes one
+     *  pattern step = one clip's motion). */
     public static Formula toFormula(JSONObject o) {
         String id = o.optString("id", "C0");
         String name = o.optString("name", "Custom Formula");
@@ -88,6 +100,28 @@ public class CustomFormulaStore {
         KeyframeState identity = new KeyframeState(0, 0, 1f, 0, 1);
         Formula f = new Formula(id, name, category, identity.copy(), identity.copy());
         f.steps = new ArrayList<>();
+
+        // ---- NEW format: explicit per-clip pattern steps referencing motions ----
+        JSONArray steps = o.optJSONArray("steps");
+        if (steps != null && steps.length() > 0) {
+            for (int i = 0; i < steps.length(); i++) {
+                JSONObject s = steps.optJSONObject(i);
+                if (s == null) continue;
+                String mid = s.optString("motionId", "00");
+                Formula motion = MotionCatalog.byId(mid);
+                FormulaStep step = new FormulaStep(cloneMotion(motion));
+                try { step.easing = Easing.valueOf(s.optString("easing", step.easing.name())); } catch (Exception ignored) {}
+                try { step.transition = TransitionType.valueOf(s.optString("transition", TransitionType.NONE.name())); } catch (Exception ignored) {}
+                try { step.effect = EffectType.valueOf(s.optString("effect", EffectType.NONE.name())); } catch (Exception ignored) {}
+                step.effectIntensity = (float) s.optDouble("effectIntensity", 0.6f);
+                // re-apply easing onto the cloned motion
+                if (step.motion != null) step.motion.easing = step.easing;
+                f.steps.add(step);
+            }
+            return f;
+        }
+
+        // ---- LEGACY format: keyframes interpolated inside one clip ----
         JSONArray kfs = o.optJSONArray("keyframes");
         if (kfs == null || kfs.length() < 2) {
             // Degenerate case — one static step so the formula is still valid.
@@ -121,6 +155,16 @@ public class CustomFormulaStore {
             f.steps.add(st);
         }
         return f;
+    }
+
+    /** Independent copy of a catalog motion so per-step edits never touch the catalog. */
+    private static Formula cloneMotion(Formula m) {
+        Formula n = new Formula(m.id, m.name, m.category,
+                m.start == null ? new KeyframeState(0, 0, 1f, 0, 1) : m.start.copy(),
+                m.end == null ? new KeyframeState(0, 0, 1f, 0, 1) : m.end.copy());
+        n.category = m.category; n.easing = m.easing; n.speed = m.speed;
+        n.zoomAmount = m.zoomAmount; n.smoothness = m.smoothness;
+        return n;
     }
 
     public static String previewUri(JSONObject o) { return o.optString("previewUri", null); }
