@@ -2,9 +2,11 @@
   "_comment": "Release automation config. minimumSupportedVersionCode: if omitted or 0, defaults to the new versionCode (fully mandatory). Set it LOWER than the new versionCode to allow older versions to keep working. releaseNotes: bullets shown on the update screen. You only edit THIS file and the versionCode/versionName in app/build.gradle.kts — the workflow generates version.json and the GitHub Release automatically.",
   "minimumSupportedVersionCode": 4,
   "releaseNotes": [
-    "Fixed Export Progress screen logo",
-    "Custom formulas and keyframes",
-    "Video Frame Extractor (offline)",
-    "Mandatory update system"
+    "NEW: Formula is now a repeating per-clip motion pattern (clip 1 → motion 1, clip 2 → motion 2, then repeats)",
+    "24 motion presets, 20 formula patterns, 20 transitions, 23 effects — every card has a live preview",
+    "Safe-scale rendering: no more black/empty edges during pan, slide or zoom",
+    "Bottom-sheet tool panels — the preview no longer shrinks; swipe to close",
+    "Unlimited custom formulas with add / reorder / delete steps",
+    "More reliable export timing, validation, play and share"
   ]
 }
