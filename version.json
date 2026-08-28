@@ -1,13 +1,10 @@
 {
-  "latestVersionCode": 14,
-  "latestVersionName": "1.5.1",
+  "latestVersionCode": 15,
+  "latestVersionName": "1.6.0",
   "minimumSupportedVersionCode": 4,
   "downloadUrl": "https://github.com/primetushar325-rgb/auto-edit-android/releases/latest/download/AutoEdit-latest.apk",
   "releaseNotes": [
-    "FIXED: restored the nine category thumbnails (Eiffel Tower, Burj Khalifa, Taj Mahal and the rest) that v1.5.0 accidentally dropped",
-    "FIXED: restored saving extracted frames to Pictures/AutoEdit/Frames",
-    "FIXED: restored the Play Video fallback chooser",
-    "Kept from v1.5.0: export ring now animates smoothly, reopening the app resumes real export progress, and the frame extractor has pinch-to-zoom framing",
-    "104 unit tests passing"
+    "New: short ads before export",
+    "Export, audio, formula, motion, transition and frame extraction are unchanged"
   ]
 }
