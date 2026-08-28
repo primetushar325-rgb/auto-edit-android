@@ -256,7 +256,14 @@ public class ExportRingView extends View {
             canvas.save();
             canvas.translate(cx, cy);
             canvas.scale(1f + 0.03f * breath, 1f + 0.03f * breath);
-            canvas.drawBitmap(logoBmp, -ls / 2f, -ls / 2f, logoPaint);
+            // PART 17: fit the logo inside a small centered square while
+            // PRESERVING its aspect ratio (FIT_CENTER) — never stretch to a
+            // square, never crop, fully visible, not oversized.
+            float lw = logoBmp.getWidth(), lh = logoBmp.getHeight();
+            float s = ls / Math.max(lw, lh);
+            float dw = lw * s, dh = lh * s;
+            android.graphics.RectF logoDst = new android.graphics.RectF(-dw / 2f, -dh / 2f, dw / 2f, dh / 2f);
+            canvas.drawBitmap(logoBmp, null, logoDst, logoPaint);
             canvas.restore();
             logoPaint.setColorFilter(null);
         }

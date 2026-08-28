@@ -236,7 +236,9 @@ public class MainActivity extends Activity {
         header.setGravity(Gravity.CENTER_VERTICAL);
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.logo_autoedit_alpha); // transparent logo (background keyed out)
-        header.addView(logo, new LinearLayout.LayoutParams(dp(58), dp(58)));
+        logo.setScaleType(ImageView.ScaleType.FIT_CENTER);      // aspect-preserved, never stretched
+        logo.setAdjustViewBounds(true);
+        header.addView(logo, new LinearLayout.LayoutParams(dp(66), dp(48)));
         LinearLayout titles = col();
         titles.addView(label("Auto-Edit", 30, AeDesign.TEXT, Typeface.BOLD));
         titles.addView(label("Create. Edit. Export.", 14, AeDesign.MUTED, Typeface.NORMAL));
@@ -990,88 +992,7 @@ public class MainActivity extends Activity {
         parent.addView(card, lp);
     }
 
-    /** "+ New" card → opens the Custom Formula creator. */
-    private void addNewFormulaCard(LinearLayout parent) {
-        LinearLayout card = col();
-        card.setPadding(dp(8), dp(8), dp(8), dp(8));
-        card.setBackground(AeDesign.bg(AeDesign.SURFACE, dp(18), AeDesign.STROKE, 1));
-        ImageView plus = new ImageView(this);
-        plus.setImageResource(R.drawable.ic_add);
-        plus.setColorFilter(AeDesign.ACCENT);
-        plus.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        plus.setPadding(dp(30), dp(30), dp(30), dp(30));
-        card.addView(plus, new LinearLayout.LayoutParams(dp(112), dp(112)));
-        TextView name = label("＋ New", 12, AeDesign.TEXT, Typeface.BOLD);
-        name.setGravity(Gravity.CENTER);
-        card.addView(name, new LinearLayout.LayoutParams(-1, -2));
-        TextView cat = label("Create custom formula", 10, AeDesign.MUTED, Typeface.NORMAL);
-        cat.setGravity(Gravity.CENTER);
-        card.addView(cat, new LinearLayout.LayoutParams(-1, -2));
-        AeDesign.press(card, () -> openCustomFormulaLibrary());
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-        lp.setMargins(dp(6), dp(4), dp(6), dp(4));
-        parent.addView(card, lp);
-    }
-
-    /** One custom formula card: preview thumbnail + CUSTOM badge; tap applies. */
-    private void addCustomFormulaCard(LinearLayout parent, JSONObject o) {
-        String id = o.optString("id");
-        String nameStr = o.optString("name", "Custom");
-        int kfCount = o.optJSONArray("keyframes") != null ? o.optJSONArray("keyframes").length() : 0;
-        LinearLayout card = col();
-        card.setPadding(dp(8), dp(8), dp(8), dp(8));
-        ImageView thumb = new ImageView(this);
-        thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        thumb.setImageBitmap(customThumb(o));
-        thumb.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(14), AeDesign.STROKE, 1));
-        card.addView(thumb, new LinearLayout.LayoutParams(dp(112), dp(112)));
-
-        LinearLayout nameRow = row();
-        nameRow.setGravity(Gravity.CENTER);
-        nameRow.addView(label(nameStr, 11, AeDesign.TEXT, Typeface.BOLD));
-        TextView badge = label("CUSTOM", 8, AeDesign.ACCENT, Typeface.BOLD);
-        badge.setGravity(Gravity.CENTER);
-        badge.setBackground(AeDesign.bg(0xff12395c, dp(8), AeDesign.ACCENT, 1));
-        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-2, -2);
-        blp.leftMargin = dp(4);
-        nameRow.addView(badge, blp);
-        card.addView(nameRow, new LinearLayout.LayoutParams(-1, -2));
-        TextView cat = label((o.optString("category", "Custom")) + " • " + Math.round(o.optDouble("totalDuration", 8)) + "s • " + (kfCount - 1) + " steps", 10, AeDesign.MUTED, Typeface.NORMAL);
-        cat.setGravity(Gravity.CENTER);
-        card.addView(cat, new LinearLayout.LayoutParams(-1, -2));
-
-        boolean applied;
-        if (selected >= 0 && selected < project.clips.size()) applied = sameFormulaId(project.clips.get(selected).formula, id);
-        else if (!project.clips.isEmpty()) {
-            applied = true;
-            for (TimelineClip c : project.clips) if (!sameFormulaId(c.formula, id)) { applied = false; break; }
-        } else applied = false;
-        card.setBackground(AeDesign.bg(AeDesign.SURFACE, dp(18), applied ? AeDesign.ACCENT : AeDesign.STROKE, applied ? 2 : 1));
-        AeDesign.press(card, () -> {
-            applyFormula(id);
-            formulaBatchPanel();
-        });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-        lp.setMargins(dp(6), dp(4), dp(6), dp(4));
-        parent.addView(card, lp);
-    }
-
-    private Bitmap customThumb(JSONObject o) {
-        try {
-            String uri = CustomFormulaStore.previewUri(o);
-            if (uri == null) return null;
-            BitmapFactory.Options opts = new BitmapFactory.Options();
-            opts.inSampleSize = 8;
-            try (InputStream in = getContentResolver().openInputStream(Uri.parse(uri))) {
-                return BitmapFactory.decodeStream(in, null, opts);
-            }
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    /** Opens the Custom Formula library/creator; applying comes back through
-     *  onActivityResult so it runs through the normal undo/redo-safe path. */
+    /** Opens the Custom Formula library; applying returns via onActivityResult. */
     private void openCustomFormulaLibrary() {
         try {
             Intent i = new Intent(this, CustomFormulaActivity.class);
@@ -1082,40 +1003,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void addFormulaCard(LinearLayout parent, String id) {
-        Formula f = formulas.byId(id);
-        LinearLayout card = col();
-        card.setPadding(dp(8), dp(8), dp(8), dp(8));
-        FormulaPreviewView pv = new FormulaPreviewView(this);
-        pv.setFormula(f);
-        card.addView(pv, new LinearLayout.LayoutParams(dp(112), dp(132)));
-        TextView name = label(f.name, 12, AeDesign.TEXT, Typeface.BOLD);
-        name.setGravity(Gravity.CENTER);
-        card.addView(name, new LinearLayout.LayoutParams(-1, -2));
-        String sub = f.isSequence()
-                ? f.category + " • " + f.steps.size() + "-clip pattern"
-                : "Single motion";
-        TextView cat = label(sub, 10, AeDesign.MUTED, Typeface.NORMAL);
-        cat.setGravity(Gravity.CENTER);
-        card.addView(cat, new LinearLayout.LayoutParams(-1, -2));
-
-        boolean applied;
-        if (selected >= 0 && selected < project.clips.size()) applied = sameFormulaId(project.clips.get(selected).formula, id);
-        else if (!project.clips.isEmpty()) {
-            applied = true;
-            for (TimelineClip c : project.clips) if (!sameFormulaId(c.formula, id)) { applied = false; break; }
-        } else applied = false;
-
-        card.setBackground(AeDesign.bg(AeDesign.SURFACE, dp(18), applied ? AeDesign.ACCENT : AeDesign.STROKE, applied ? 2 : 1));
-        final String fid = id;
-        AeDesign.press(card, () -> {
-            applyFormula(fid);
-            formulaBatchPanel(); // refresh applied state
-        });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-        lp.setMargins(dp(6), dp(4), dp(6), dp(4));
-        parent.addView(card, lp);
-    }
 
     private boolean sameFormulaId(Formula a, String id) {
         return a != null && a.id != null && a.id.equals(id);
@@ -1691,11 +1578,36 @@ public class MainActivity extends Activity {
         parent.addView(v, lp);
     }
 
+    /** Part 21: validate the project before encoding. Returns an error string, or null if OK. */
+    private String validateExport(int width, int height, int fps) {
+        if (project == null || project.clips.isEmpty()) return "No images to export — add photos first.";
+        if (width <= 0 || height <= 0) return "Invalid canvas size.";
+        if (width % 2 != 0 || height % 2 != 0) return "Canvas width/height must be even numbers.";
+        if (fps < 15 || fps > 120) return "Invalid frame rate (must be 15–120).";
+        FormulaEngine engine = formulas != null ? formulas : new FormulaEngine();
+        for (TimelineClip c : project.clips) {
+            if (c.durationSec <= 0.05f) return "A clip has an invalid duration.";
+            if (c.uri == null) return "One image is missing its source.";
+            try (java.io.InputStream is = getContentResolver().openInputStream(android.net.Uri.parse(c.uri))) {
+                if (is == null) return "An image can no longer be read: " + c.index;
+            } catch (Exception e) {
+                return "Image for clip " + c.index + " is unreadable (it may have been moved or deleted).";
+            }
+            try { engine.stateForClip(c.formula, c.index, 0.5f); }
+            catch (Exception e) { return "The motion on clip " + c.index + " is invalid."; }
+        }
+        return null;
+    }
+
     private void startExistingExport() {
         if (project.clips.isEmpty()) { toast("Import images first"); return; }
         if (exportRunning) { toast("Export already running"); showExportProgressScreen(); return; }
         int width = draftPreset.width, height = draftPreset.height;
         if (draftPreset == ExportPreset.CUSTOM) { width = project.width; height = project.height; }
+        if (width % 2 == 1) width++;
+        if (height % 2 == 1) height++;
+        String err = validateExport(width, height, draftFps);
+        if (err != null) { toast(err); return; }
         project.exportPreset = draftPreset;
         project.width = width;
         project.height = height;
@@ -1946,40 +1858,56 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    @SuppressWarnings("deprecation")
+    /**
+     * Modern thumbnail loading: ContentResolver.loadThumbnail on Q+ (no
+     * deprecated Thumbnails.getThumbnail). Falls back to nothing on older
+     * devices so the UI shows a placeholder rather than crashing.
+     */
     private Bitmap loadVideoThumb(Uri uri) {
+        if (uri == null) return null;
         try {
-            Cursor c = getContentResolver().query(uri, new String[]{MediaStore.Video.Media._ID}, null, null, null);
-            long id = 0;
-            if (c != null) { if (c.moveToFirst()) id = c.getLong(0); c.close(); }
-            if (id <= 0) return null;
-            return MediaStore.Video.Thumbnails.getThumbnail(getContentResolver(), id,
-                    MediaStore.Video.Thumbnails.MINI_KIND, new BitmapFactory.Options());
+            if (Build.VERSION.SDK_INT >= 29) {
+                android.util.Size size = new android.util.Size(dp(320), dp(320));
+                android.os.CancellationSignal cs = new android.os.CancellationSignal();
+                try { return getContentResolver().loadThumbnail(uri, size, cs); }
+                catch (NoSuchMethodError nse) { return null; }
+            }
         } catch (Exception e) {
             Log.e(TAG, "Thumbnail load failed", e);
-            return null;
         }
+        return null;
     }
 
     private void playVideo(Uri uri) {
+        if (uri == null) { toast("Video is not available yet"); return; }
         try {
             Intent i = new Intent(Intent.ACTION_VIEW);
             i.setDataAndType(uri, "video/mp4");
-            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(i, "Play video"));
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            PackageManager pm = getPackageManager();
+            if (i.resolveActivity(pm) == null) {
+                toast("No video player installed. Find it in Movies/AutoEdit.");
+                return;
+            }
+            startActivity(i);
         } catch (Exception e) {
+            Log.e(TAG, "Play failed", e);
             toast("Could not open video: " + e.getMessage());
         }
     }
 
     private void shareVideo(Uri uri) {
+        if (uri == null) { toast("Video is not available yet"); return; }
         try {
             Intent i = new Intent(Intent.ACTION_SEND);
             i.setType("video/mp4");
             i.putExtra(Intent.EXTRA_STREAM, uri);
-            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            PackageManager pm = getPackageManager();
+            if (i.resolveActivity(pm) == null) { toast("No app available to share."); return; }
             startActivity(Intent.createChooser(i, "Share video"));
         } catch (Exception e) {
+            Log.e(TAG, "Share failed", e);
             toast("Could not share video: " + e.getMessage());
         }
     }

@@ -14,7 +14,7 @@ val hasReleaseSigning = !signingStoreFile.isNullOrBlank()
 android {
     namespace = "com.autoedit"
     compileSdk = 35
-    defaultConfig { applicationId = "com.autoedit"; minSdk = 26; targetSdk = 35; versionCode = 7; versionName = "1.1.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "com.autoedit"; minSdk = 26; targetSdk = 35; versionCode = 8; versionName = "1.2.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     signingConfigs {
         if (hasReleaseSigning) {
             create("release") {
