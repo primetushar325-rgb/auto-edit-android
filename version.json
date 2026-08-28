@@ -1,17 +1,14 @@
 {
-  "latestVersionCode": 10,
-  "latestVersionName": "1.3.0",
+  "latestVersionCode": 12,
+  "latestVersionName": "1.4.0",
   "minimumSupportedVersionCode": 4,
   "downloadUrl": "https://github.com/primetushar325-rgb/auto-edit-android/releases/latest/download/AutoEdit-latest.apk",
   "releaseNotes": [
-    "Fixed black edges and gaps during pan, push and slide transitions - clips now tile the frame exactly",
-    "64 motion presets, 34 formula patterns, 32 transitions, 41 effects and 26 easing curves",
-    "Card thumbnails are now distinct per option instead of repeating one photo",
-    "Easing picker shows an animated curve graph so you can see the motion before applying it",
-    "Export verifies the finished MP4 really contains a video track (and an audio track when you added music) before saving",
-    "Saved videos go to Movies/AutoEdit and extracted frames to Pictures/AutoEdit - both appear in Gallery immediately",
-    "Projects now save text overlays, audio tracks, effect layers and quality settings - nothing is lost on reopen",
-    "Fixed back easings overshooting twice as far as intended",
-    "In-app update: correct version compare (1.10.0 > 1.9.0), verified downloads, clear errors instead of silent failure"
+    "NEW: every editing category now has its own premium thumbnail - Formula = Eiffel Tower, Transition = Taj Mahal, Motion = Burj Khalifa, Effects = neon light art",
+    "Formula, Motion, Transition and Effect cards now show real category imagery instead of generated placeholders, while still animating the actual motion/effect on top",
+    "Extracted video frames now save to Pictures/AutoEdit/Frames so they are grouped and easy to find in Gallery",
+    "Play Video no longer dead-ends when no default player is set - you get a chooser plus Share",
+    "All assets are bundled locally, so the app stays fully offline",
+    "Export fix from 1.3.1 kept: no more freeze on 'Finalizing...', real error messages, verified MP4 before 'Export Complete'"
   ]
 }
