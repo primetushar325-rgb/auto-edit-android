@@ -1,8 +1,11 @@
 {
-  "_comment": "Release automation config. minimumSupportedVersionCode: if omitted or 0, defaults to the new versionCode (fully mandatory). Set it LOWER than the new versionCode to allow older versions to keep working. releaseNotes: bullets shown on the update screen. You only edit THIS file and the versionCode/versionName in app/build.gradle.kts — the workflow generates version.json and the GitHub Release automatically.",
+  "_comment": "Release automation config. minimumSupportedVersionCode: if omitted or 0, defaults to the new versionCode (fully mandatory). Set it LOWER than the new versionCode to allow older versions to keep working. releaseNotes: bullets shown on the update screen. You only edit THIS file and the versionCode/versionName in app/build.gradle.kts \u2014 the workflow generates version.json and the GitHub Release automatically.",
   "minimumSupportedVersionCode": 4,
   "releaseNotes": [
-    "Fixed a crash when previewing large or 4K videos in the frame extractor",
-    "Permissions are now asked once, up front, instead of interrupting you mid-task"
+    "Brand-new CapCut-style Transition library: 240+ named transitions across 16 categories",
+    "Live looping preview cards, search, favourites and Recently Used",
+    "Real 3D perspective, controllable blur, RGB-split/glitch, flash and feathered shape masks",
+    "Per-transition duration (0.2-2.0s); select a card, then apply to one junction or every boundary",
+    "Preview and export share the exact same transition math; old projects open safely"
   ]
 }

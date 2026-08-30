@@ -13,7 +13,10 @@ import android.graphics.RectF;
 import android.os.SystemClock;
 import android.view.View;
 import com.autoedit.R;
+import com.autoedit.engine.TransitionDraw;
 import com.autoedit.engine.TransitionEngine;
+import com.autoedit.engine.TransitionRegistry;
+import com.autoedit.model.TransitionPreset;
 import com.autoedit.model.TransitionType;
 
 /**
@@ -30,6 +33,7 @@ public class TransitionPreviewView extends View {
     private final TransitionEngine engine = new TransitionEngine();
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private TransitionType type = TransitionType.FADE;
+    private TransitionPreset preset;
     private long startMs;
 
     public TransitionPreviewView(Context c) {
@@ -39,6 +43,15 @@ public class TransitionPreviewView extends View {
 
     public void setTransition(TransitionType t) {
         this.type = t == null ? TransitionType.NONE : t;
+        this.preset = null;
+        startMs = SystemClock.elapsedRealtime();
+        invalidate();
+    }
+
+    /** Library preset — the card demos the full preset (direction/tint/intensity). */
+    public void setTransition(TransitionPreset p) {
+        this.preset = p;
+        this.type = p == null ? TransitionType.NONE : p.type;
         startMs = SystemClock.elapsedRealtime();
         invalidate();
     }
@@ -74,40 +87,26 @@ public class TransitionPreviewView extends View {
 
         // Two genuinely different scenes so the two halves read as separate
         // clips and the direction of travel is obvious (spec §13).
-        TransitionEngine.Transform out = engine.outgoing(type, p);
-        TransitionEngine.Transform in = engine.incoming(type, p);
+        TransitionEngine.Transform out = preset != null ? engine.outgoing(preset, p) : engine.outgoing(type, p);
+        TransitionEngine.Transform in = preset != null ? engine.incoming(preset, p) : engine.incoming(type, p);
 
-        // outgoing (old) layer
-        drawLayer(canvas, bmp, dw, dh, w, h, out.dx, out.dy, out.scale, out.alpha, 0x332b5ea0, false, null);
+        // outgoing (old) layer with full transform (3D/squeeze/shake via TransitionDraw)
+        drawLayer(canvas, bmp, dw, dh, w, h, out, 0x332b5ea0);
 
-        // incoming (new) layer, clipped for reveal transitions
-        boolean masked = in.revealRadius > 0f && in.revealRadius < 1f;
-        int saved = -1;
-        if (masked) {
-            saved = canvas.save();
-            Path reveal = new Path();
-            if (in.circleReveal) {
-                float maxR = (float) Math.hypot(w, h) / 2f;
-                reveal.addCircle(w / 2f + in.dx * w, h / 2f + in.dy * h,
-                        Math.max(1f, maxR * in.revealRadius), Path.Direction.CW);
-            } else {
-                float cover = Math.max(w, h) * 1.2f, ext = cover * in.revealRadius, cx = w / 2f, cy = h / 2f;
-                RectF r = in.wipeAxis == 1
-                        ? new RectF(cx - (in.wipeSign < 0 ? ext : 0), -cover, cx + (in.wipeSign > 0 ? ext : 0), h + cover)
-                        : new RectF(-cover, cy - (in.wipeSign < 0 ? ext : 0), w + cover, cy + (in.wipeSign > 0 ? ext : 0));
-                reveal.addRect(r, Path.Direction.CW);
-            }
-            canvas.clipPath(reveal);
-        }
-        drawLayer(canvas, bmpIn == null ? bmp : bmpIn, dw, dh, w, h,
-                in.dx, in.dy, in.scale, in.alpha, 0x33b07a2a, true, null);
-        if (masked && saved >= 0) canvas.restoreToCount(saved);
+        // incoming (new) layer, clipped for reveal/shape transitions
+        int saved = TransitionDraw.clipReveal(canvas, w, h, in);
+        drawLayer(canvas, bmpIn == null ? bmp : bmpIn, dw, dh, w, h, in, 0x33b07a2a);
+        if (saved >= 0) canvas.restoreToCount(saved);
 
-        // flash overlay
-        if (engine.flashes(type)) {
+        // overlays (flash/light/dip) + grain
+        TransitionDraw.drawOverlay(canvas, w, h, in);
+        TransitionDraw.drawOverlay(canvas, w, h, out);
+        if (in.grain > 0.02f || out.grain > 0.02f)
+            TransitionDraw.drawGrain(canvas, w, h, Math.max(in.grain, out.grain), in.seed + p);
+        if (engine.flashes(type) && in.overlayAlpha <= 0.001f && out.overlayAlpha <= 0.001f) {
             int fa = (int) (255 * (1f - Math.abs(p - 0.5f) * 2f));
             paint.setAlpha(Math.max(0, fa));
-            paint.setColor(Color.WHITE);
+            paint.setColor(engine.flashColor(type));
             canvas.drawRect(0, 0, w, h, paint);
             paint.setAlpha(255);
         }
@@ -116,25 +115,26 @@ public class TransitionPreviewView extends View {
     }
 
     private void drawLayer(Canvas canvas, Bitmap bmp, float dw, float dh, int w, int h,
-                           float dx, float dy, float scale, float alpha, int tint, boolean ignore, Paint extra) {
-        float dw2 = dw * scale, dh2 = dh * scale;
-        float cx = w / 2f + dx * w, cy = h / 2f + dy * h;
+                           TransitionEngine.Transform t, int tint) {
+        int layer = TransitionDraw.apply(canvas, w / 2f, h / 2f, t);
+        TransitionDraw.applySqueeze(canvas, w / 2f, h / 2f, t);
+        float dw2 = dw * t.scale, dh2 = dh * t.scale;
+        float ox = (t.dx + t.shakeX), oy = (t.dy + t.shakeY);
+        float cx = w / 2f + ox * w, cy = h / 2f + oy * h;
         RectF r = new RectF(cx - dw2 / 2, cy - dh2 / 2, cx + dw2 / 2, cy + dh2 / 2);
-        paint.setAlpha((int) (255 * Math.max(0f, Math.min(1f, alpha))));
+        canvas.save(); canvas.rotate(t.rotZ, cx, cy);
+        paint.setAlpha((int) (255 * Math.max(0f, Math.min(1f, t.alpha))));
         canvas.drawBitmap(bmp, null, r, paint);
-        // tint wash to differentiate the two clips
-        paint.setAlpha((int) (255 * Math.max(0f, Math.min(1f, alpha)) * 0.35f));
+        if (t.chroma > 0.02f) TransitionDraw.drawChromaSplit(canvas, r, bmp, t.chroma, t.rotZ, cx, cy);
+        canvas.restore();
+        paint.setAlpha((int) (255 * Math.max(0f, Math.min(1f, t.alpha)) * 0.35f));
         paint.setColor(tint);
         canvas.drawRect(r, paint);
         paint.setAlpha(255);
+        canvas.restoreToCount(layer);
     }
 
-    /**
-     * A transition needs TWO distinguishable frames to read at all, so the
-     * outgoing panel uses one scene and the incoming panel another (spec §13:
-     * "two different visual frames, clear directional preview").
-     */
-    /** Transition cards use the Taj Mahal / India cinematic reference (spec §8). */
+    /** Transition cards use distinguishable reference scenes so the two clips read. */
     private Bitmap sharedBitmapFor(int w, int h) {
         Bitmap b = PreviewArt.asset(getResources(),
                 com.autoedit.R.drawable.card_transition_tajmahal, Math.max(96, w), Math.max(120, h));

@@ -1,5 +1,6 @@
 package com.autoedit.engine;
 
+import com.autoedit.model.TransitionPreset;
 import com.autoedit.model.TransitionType;
 
 /**
@@ -36,9 +37,80 @@ public class TransitionEngine {
         /** Full-frame colour wash (dip to black/white, light leak, flash). */
         public int overlayColor = 0;
         public float overlayAlpha = 0f;
+        // ---- CapCut library families (v1.7) ----
+        public float rotZ = 0f;            // 2D spin (degrees)
+        public float rotX = 0f;            // 3D pitch (perspective)
+        public float rotY = 0f;            // 3D yaw (perspective)
+        public float shakeX = 0f, shakeY = 0f;   // frame jitter (normalised)
+        public float chroma = 0f;          // RGB-split / chromatic aberration 0..1
+        public float grain = 0f;           // film grain / noise 0..1
+        public float squeezeX = 1f, squeezeY = 1f; // single-axis scale (squeeze/elastic)
+        public float strip = 0f;           // glitch tear band 0..1
+        /** Shape variant for shape reveals: heart/star/diamond/triangle/hexagon/rect/roundrect. */
+        public String shape = "";
+        public float seed = 0f;            // deterministic pseudo-random from mix
     }
 
     private static float clamp01(float v) { return v < 0f ? 0f : (v > 1f ? 1f : v); }
+    private static float ease(float p) { return p * p * (3f - 2f * p); }
+    private static float easeOut(float p) { return 1f - (1f - p) * (1f - p); }
+    private static float bell(float p) { return 1f - Math.abs(p - 0.5f) * 2f; }
+    private static float tri(float p) { return 1f - Math.abs((p % 1f) - 0.5f) * 2f; }
+    private static float hash(float n) { float s = (float) Math.sin(n * 127.1f) * 43758.5453f; return s - (float) Math.floor(s); }
+    private void jitter(Transform tr, float p, float amp) {
+        tr.shakeX = (hash(p * 91f) - 0.5f) * 2f * amp;
+        tr.shakeY = (hash(p * 57f + 11f) - 0.5f) * 2f * amp;
+    }
+
+    // ---- preset-aware overloads (library); resolve direction/tint/intensity ----
+    public Transform outgoing(TransitionPreset pr, float pRaw) {
+        if (pr == null) return outgoing(TransitionType.CROSS_DISSOLVE, pRaw);
+        Transform t = outgoing(pr.type, pRaw);
+        applyDirection(t, pr);
+        applyPreset(t, pr, pRaw);
+        return t;
+    }
+    public Transform incoming(TransitionPreset pr, float pRaw) {
+        if (pr == null) return incoming(TransitionType.CROSS_DISSOLVE, pRaw);
+        Transform t = incoming(pr.type, pRaw);
+        applyDirection(t, pr);
+        applyPreset(t, pr, pRaw);
+        return t;
+    }
+
+    private void applyDirection(Transform tr, TransitionPreset pr) {
+        String d = pr.direction == null ? "" : pr.direction;
+        switch (d) {
+            case "right": tr.dx = -tr.dx; tr.wipeSign = -tr.wipeSign; tr.blurDirection = -tr.blurDirection; break;
+            case "up":    tr.dy = -tr.dy; tr.wipeSign = -tr.wipeSign; break;
+            case "down":  tr.dy = -tr.dy; tr.wipeSign = -tr.wipeSign; break;
+            case "horizontal": tr.rotX = -tr.rotX; break;
+            case "vertical":   tr.rotY = -tr.rotY; break;
+            case "cw":  tr.rotZ = Math.abs(tr.rotZ); break;
+            case "ccw": tr.rotZ = -Math.abs(tr.rotZ); break;
+            case "out": tr.revealRadius = 1f - tr.revealRadius; tr.revealInverse = true; break;
+            default: break;
+        }
+        if ((d.equals("up") || d.equals("down")) && tr.wipeAxis == 0 && tr.revealRadius > 0f) tr.wipeAxis = 1;
+        if ((d.equals("left") || d.equals("right")) && tr.wipeAxis == 2) { /* diagonal stays */ }
+    }
+
+    private void applyPreset(Transform tr, TransitionPreset pr, float p) {
+        if (pr.type == TransitionType.SHAPE_REVEAL && pr.direction != null && !pr.direction.isEmpty()) {
+            tr.shape = pr.direction;
+        }
+        float k = pr.intensity <= 0f ? 1f : Math.max(0.2f, pr.intensity / 0.6f);
+        tr.chroma = clamp01(tr.chroma * k);
+        tr.blurAmount = clamp01(tr.blurAmount * (0.5f + 0.5f * k));
+        tr.grain = clamp01(tr.grain * k);
+        tr.rotZ *= (0.5f + 0.5f * k);
+        tr.rotX *= k; tr.rotY *= k;
+        // tinted / coloured overlays for flash/light families
+        if (pr.type.isOverlay() && tr.overlayColor != 0) {
+            if (pr.tint != 0 && tr.overlayColor == 0xFFFFFFFF) tr.overlayColor = pr.tint;
+            if (pr.intensity > 0f) tr.overlayAlpha = clamp01(tr.overlayAlpha * Math.max(0.3f, pr.intensity));
+        }
+    }
 
     /** True when the junction fades through a solid background (FADE, dips). */
     public boolean fadesThroughBackground(TransitionType t) {
@@ -130,10 +202,122 @@ public class TransitionEngine {
                 tr.overlayColor = 0xFFFFFFFF;
                 tr.overlayAlpha = p < 0.5f ? p * 2f : 1f;
                 break;
-            default: break;
+            default:
+                fillFamilyOutgoing(tr, t, p);
+                break;
         }
         tr.alpha = outgoingAlpha(t, p);
         return tr;
+    }
+
+    /** CapCut library renderer math for the OUTGOING (old) clip. */
+    private void fillFamilyOutgoing(Transform tr, TransitionType t, float pRaw) {
+        float p = clamp01(pRaw), e = ease(p);
+        tr.seed = hash(pRaw * 31f + 7f);
+        switch (t) {
+            case FADE_SCAN: case FADE_DIRECTIONAL: case FADE_WIPE: case GRADUAL_FADE:
+            case CINEMATIC_FADE: case VINTAGE_FADE:
+                tr.alpha = 1f - easeOut(p); break;
+            case FAKE_ZOOM: tr.scale = 1f + 0.35f * bell(p); break;
+            case ZOOM_IN: tr.scale = 1f + 0.25f * e; break;
+            case ZOOM_OUT: tr.scale = 1f - 0.2f * e; break;
+            case ZOOM_SWITCH: tr.scale = 1f + 0.22f * bell(p); break;
+            case MIRROR_ZOOM: tr.scale = 1f + 0.2f * e; tr.rotY = 90f * e; tr.alpha = e < .5f ? 1f : 0f; return;
+            case QUAKY_ZOOM: tr.scale = 1f + 0.2f * e; jitter(tr, p, 0.04f); break;
+            case DIAGONAL_WIPE: case CORNER_WIPE: case LIQUID_WIPE: tr.alpha = 1f; break;
+            case COVER: tr.alpha = 1f; break;
+            case REVEAL_SLIDE: tr.dx = -0.6f * e; break;
+            case SPLIT_WIPE: case CENTER_WIPE: case CINEMATIC_WIPE: case COMPARISON: tr.alpha = 1f; break;
+            case SHAPE_REVEAL: case FUZZY_CIRCLE: case MESSY_CIRCLES: tr.alpha = 1f; break;
+            case TELEPORT_SHAKE: jitter(tr, p, 0.06f); tr.scale = 1f + 0.15f * bell(p); break;
+            case SPIN_SLAM: tr.rotZ = 120f * e; tr.scale = 1f + 0.3f * bell(p); break;
+            case SQUEEZE_SNAP: case COMPRESSION_SPIN: tr.squeezeX = 1f - 0.5f * bell(p);
+                if (t == TransitionType.COMPRESSION_SPIN) tr.rotZ = 90f * e; break;
+            case ASH_SPREAD: case PETAL_WIND: tr.scale = 1f + 0.15f * e; break;
+            case DRAG_SWITCH: tr.dx = -e; tr.squeezeX = 1f - 0.3f * bell(p); break;
+
+            case CAMERA_PUSH: tr.scale = 1f + 0.4f * e; break;
+            case CAMERA_PULL: tr.scale = 1f - 0.3f * e; break;
+            case ZOOM_SNAP: tr.scale = 1f + 0.5f * bell(p); break;
+            case DOLLY_ZOOM: tr.scale = 1f + 0.5f * e; tr.squeezeY = 1f + 0.12f * e; break;
+            case CAMERA_SHAKE: case FILM_SHAKE: jitter(tr, p, t == TransitionType.CAMERA_SHAKE ? 0.05f : 0.035f);
+                if (t == TransitionType.FILM_SHAKE) tr.grain = 0.3f; break;
+            case SHAKE_SHIFT: jitter(tr, p, 0.06f); tr.dx = -0.8f * e; break;
+            case CAMERA_ROTATE: tr.rotZ = 90f * e; break;
+            case CAMERA_ROLL: tr.rotZ = 180f * e; tr.scale = 1f - 0.2f * e; break;
+            case ORBIT_SPIN: tr.rotY = 180f * e; tr.scale = 1f - 0.3f * e; tr.alpha = e < .5f ? 1f : 0f; return;
+
+            case CUBE_3D: tr.rotY = 90f * e; tr.dx = 0.5f * e; tr.alpha = e < .5f ? 1f : 0f; return;
+            case FLIP_3D: tr.rotX = 90f * e; tr.alpha = e < .5f ? 1f : 0f; return;
+            case ROTATE_3D: tr.rotY = 180f * e; tr.rotZ = 90f * e; tr.alpha = e < .5f ? 1f : 0f; return;
+            case PAGE_TURN_3D: tr.rotY = 100f * e; tr.dx = 0.3f * e; tr.alpha = e < .6f ? 1f : 0f; return;
+            case CARD_3D: tr.rotX = 90f * e; tr.scale = 1f - 0.2f * e; tr.alpha = e < .5f ? 1f : 0f; return;
+            case DOOR_3D: tr.rotY = 100f * e; tr.alpha = e < .6f ? 1f : 0f; return;
+            case FOLD_3D: tr.rotX = 90f * e; tr.squeezeY = 1f - 0.5f * e; tr.alpha = e < .5f ? 1f : 0f; return;
+            case TUNNEL_3D: case WISP_PORTAL: tr.scale = 1f - 0.6f * e; tr.rotZ = 20f * e;
+                if (t == TransitionType.WISP_PORTAL) tr.blurAmount = 0.4f * bell(p); break;
+            case CAROUSEL_3D: tr.rotY = 120f * e; tr.dx = 0.4f * e; tr.alpha = e < .5f ? 1f : 0f; return;
+            case PARALLAX_3D: tr.rotY = 45f * e; tr.dx = 0.25f * e; break;
+            case DEPTH_ZOOM_3D: case DARK_SCALE: tr.scale = 1f - 0.5f * e;
+                if (t == TransitionType.DEPTH_ZOOM_3D) tr.rotY = 25f * e; break;
+
+            case MOTION_BLUR_X: case BLUR_PUSH:
+                tr.blurAmount = 0.9f * bell(p); tr.dx = -0.4f * e; tr.blurDirection = -1f; break;
+            case RADIAL_BLUR: tr.blurAmount = 0.9f * bell(p); tr.rotZ = 15f * bell(p); tr.scale = 1f + 0.1f * bell(p); break;
+            case ZOOM_BLUR_X: tr.blurAmount = 0.9f * bell(p); tr.scale = 1f + 0.25f * e; break;
+            case SOFT_BLUR: case DREAM_BLUR: case DEFOCUS: tr.blurAmount = 0.8f * bell(p); break;
+            case FAST_BLUR: tr.blurAmount = bell(p); tr.dx = -0.6f * e; tr.blurDirection = -1f; break;
+            case BLUR_SWITCH: tr.blurAmount = 0.8f * bell(p); tr.scale = 1f + 0.2f * bell(p); break;
+            case BLUR_FADE: tr.blurAmount = 0.7f * bell(p); break;
+            case BLUR_WIPE: tr.alpha = 1f; tr.blurAmount = 0.6f * bell(p); break;
+            case BLUR_SPIN: tr.blurAmount = 0.7f * bell(p); tr.rotZ = 60f * e; break;
+
+            case RGB_SPLIT: case RGB_WAVE: case CHROME_WAVE: tr.chroma = 0.9f * bell(p);
+                jitter(tr, p, 0.02f); if (t == TransitionType.CHROME_WAVE) tr.squeezeX = 1f + 0.1f * (float) Math.sin(p * 18.8f); break;
+            case GLITCH: case PIXEL_GLITCH: tr.chroma = 0.7f * bell(p); tr.strip = bell(p); jitter(tr, p, 0.05f); break;
+            case VHS_GLITCH: tr.chroma = 0.5f * bell(p); tr.strip = 0.8f * bell(p); jitter(tr, p, 0.03f); break;
+            case SCANLINE_GLITCH: case DIGITAL_NOISE: tr.grain = (t == TransitionType.DIGITAL_NOISE ? 0.9f : 0.6f) * bell(p);
+                if (t == TransitionType.SCANLINE_GLITCH) tr.strip = 0.5f * bell(p); else tr.chroma = 0.3f * bell(p); break;
+            case TEAR_H: tr.strip = bell(p); tr.dx = 0.08f * tri(p * 6f); break;
+            case TEAR_V: tr.strip = bell(p); tr.dy = 0.06f * tri(p * 6f); break;
+            case PIXEL_STRETCH: tr.strip = bell(p); tr.squeezeX = 1f + 0.4f * bell(p); break;
+
+            case WHITE_FLASH: case CAMERA_FLASH: case GLOW_FLASH: case NEON_FLASH:
+            case FILM_FLASH: case SOFT_FLASH: case SUNSET_FLASH: case LENS_FLARE:
+            case LIGHT_SWEEP: case FLASH_WIPE: case GLARE:
+                tr.alpha = p < 0.4f ? 1f : 1f - (p - 0.4f) / 0.6f; break;
+            case BLACK_FLASH: case BLACKOUT_SWIPE:
+                tr.alpha = p < 0.5f ? 1f : 1f - (p - 0.5f) * 2f; break;
+            case STROBE: tr.alpha = tri(p * 6f) > 0.5f ? 1f : 0.4f; break;
+
+            case FILM_BURN: tr.grain = 0.4f * bell(p); break;
+            case FILM_ROLL: tr.dy = -e; tr.rotZ = 8f * e; break;
+            case FILM_GRAIN_X: case DUST_X: case SCRATCH_X: case DUST_FLURRY:
+                tr.grain = 0.7f * bell(p); break;
+            case CINEMATIC_ZOOM: tr.scale = 1f + 0.3f * e; tr.blurAmount = 0.3f * bell(p); break;
+            case CINEMATIC_PUSH: tr.dx = -0.8f * e; tr.scale = 1f + 0.1f * e; break;
+            case FILM_ERASE: tr.grain = 0.8f * bell(p); break;
+
+            case LIQUID_STRETCH: tr.squeezeX = 1f - 0.4f * bell(p); tr.dx = -0.3f * e; break;
+            case RIPPLE_X: tr.scale = 1f + 0.08f * (float) Math.sin(p * 18.8f); break;
+            case WAVE_WARP: tr.squeezeX = 1f + 0.12f * (float) Math.sin(p * 12.6f); jitter(tr, p, 0.015f); break;
+            case LENS_WARP: tr.scale = 1f + 0.25f * bell(p); tr.blurAmount = 0.2f * bell(p); break;
+            case BULGE: case BULGE_BLING: tr.scale = 1f + 0.35f * bell(p); tr.squeezeX = 1f + 0.15f * bell(p);
+                if (t == TransitionType.BULGE_BLING) tr.grain = 0.5f * tri(p * 10f); break;
+            case PINCH: tr.scale = 1f - 0.3f * bell(p); break;
+            case SWIRL: tr.rotZ = 120f * bell(p); tr.scale = 1f - 0.2f * bell(p); break;
+            case TWIST: tr.rotZ = 90f * e; tr.squeezeX = 1f - 0.3f * bell(p); break;
+            case HEAT_WAVE: tr.squeezeY = 1f + 0.08f * (float) Math.sin(p * 25.1f); tr.blurAmount = 0.15f * bell(p); break;
+            case ELASTIC: tr.scale = 1f + 0.25f * Math.abs((float) Math.sin(p * 12.6f)) * (1f - p); break;
+            case MELT: tr.squeezeY = 1f - 0.5f * e; tr.dy = 0.3f * e; break;
+
+            case TWINKLE_ZOOM: tr.scale = 1f + 0.3f * bell(p); tr.grain = 0.5f * tri(p * 8f); break;
+            case GALLERY_SLIDE: tr.dx = -e; break;
+            case GALLERY_ZOOM: case RANDOM_GALLERY: tr.scale = 1f - 0.3f * e;
+                if (t == TransitionType.RANDOM_GALLERY) jitter(tr, p, 0.03f); break;
+            case WILDFIRE_SCAN: tr.alpha = 1f; tr.overlayColor = 0xFFFF5A2C; tr.overlayAlpha = 0.5f * bell(p); break;
+            default: break;
+        }
     }
 
     public Transform incoming(TransitionType t, float pRaw) {
@@ -233,10 +417,135 @@ public class TransitionEngine {
             case SMOOTH_LIGHT:
                 tr.alpha = p; tr.scale = 1.08f - 0.08f * p; break;
             default:
-                tr.alpha = p;
+                fillFamilyIncoming(tr, t, p);
                 break;
         }
         return tr;
+    }
+
+    /** CapCut library renderer math for the INCOMING (new) clip. */
+    private void fillFamilyIncoming(Transform tr, TransitionType t, float pRaw) {
+        float p = clamp01(pRaw), e = ease(p);
+        tr.seed = hash(pRaw * 53f + 3f);
+        switch (t) {
+            case FADE_SCAN: tr.alpha = e; tr.revealRadius = e; tr.wipeAxis = 0; tr.wipeSign = 1f; break;
+            case FADE_DIRECTIONAL: tr.alpha = e; tr.dx = 0.2f * (1f - e); break;
+            case FADE_WIPE: case SMOOTH_REVEAL: tr.alpha = e; tr.revealRadius = e; tr.wipeAxis = 0; tr.wipeSign = 1f; break;
+            case GRADUAL_FADE: tr.alpha = e; tr.scale = 1.05f - 0.05f * e; break;
+            case CINEMATIC_FADE: tr.alpha = easeOut(p); tr.scale = 1.1f - 0.1f * e; break;
+            case VINTAGE_FADE: tr.alpha = e; tr.grain = 0.3f * bell(p); break;
+            case FAKE_ZOOM: tr.alpha = e; tr.scale = 1.4f - 0.4f * e; break;
+            case ZOOM_IN: tr.alpha = e; tr.scale = 0.8f + 0.2f * e; break;
+            case ZOOM_OUT: tr.alpha = e; tr.scale = 1.3f - 0.3f * e; break;
+            case ZOOM_SWITCH: case CINEMATIC_ZOOM: tr.alpha = 1f; tr.scale = (t == TransitionType.ZOOM_SWITCH ? 1.35f : 1.3f) - 0.35f * e;
+                if (t == TransitionType.CINEMATIC_ZOOM) tr.blurAmount = 0.3f * bell(p); break;
+            case MIRROR_ZOOM: tr.rotY = -90f + 90f * e; tr.alpha = e > .5f ? 1f : 0f; tr.scale = 1.1f - 0.1f * e; return;
+            case QUAKY_ZOOM: tr.alpha = e; tr.scale = 1.3f - 0.3f * e; jitter(tr, p, 0.04f); break;
+            case DIAGONAL_WIPE: tr.revealRadius = e; tr.wipeAxis = 2; tr.wipeSign = 1f; tr.alpha = 1f; break;
+            case CORNER_WIPE: tr.revealRadius = e; tr.wipeAxis = 2; tr.wipeSign = -1f; tr.alpha = 1f; break;
+            case LIQUID_WIPE: tr.revealRadius = e; tr.wipeAxis = 0; tr.wipeSign = 1f; tr.squeezeX = 0.8f + 0.2f * e; tr.alpha = 1f; break;
+            case COVER: tr.dx = 1f - e; tr.alpha = 1f; break;
+            case REVEAL_SLIDE: tr.revealRadius = e; tr.wipeAxis = 0; tr.wipeSign = 1f; tr.dx = 0.2f * (1f - e); tr.alpha = 1f; break;
+            case SPLIT_WIPE: tr.revealRadius = e; tr.wipeAxis = 1; tr.wipeSign = 1f; tr.alpha = 1f; break;
+            case LINEAR_WIPE: tr.revealRadius = e; tr.wipeAxis = 0; tr.wipeSign = 1f; tr.feather = 0.15f; tr.alpha = 1f; break;
+            case FEATHER_MASK: tr.revealRadius = e; tr.circleReveal = true; tr.feather = 0.35f; tr.alpha = 1f; break;
+            case CENTER_WIPE: tr.revealRadius = e; tr.wipeAxis = 1; tr.wipeSign = 0f; tr.alpha = 1f; break;
+            case CINEMATIC_WIPE: case COMPARISON: tr.revealRadius = e; tr.wipeAxis = 0; tr.wipeSign = 1f; tr.alpha = 1f; break;
+            case SHAPE_REVEAL: tr.revealRadius = e; tr.circleReveal = true; tr.shape = "shape"; tr.alpha = 1f; break;
+            case FUZZY_CIRCLE: tr.revealRadius = e; tr.circleReveal = true; tr.blurAmount = 0.25f; tr.alpha = 1f; break;
+            case MESSY_CIRCLES: tr.revealRadius = e; tr.circleReveal = true; tr.scale = 1f + 0.1f * tri(p * 5f); tr.alpha = 1f; break;
+            case TELEPORT_SHAKE: tr.alpha = e; jitter(tr, p, 0.06f); tr.scale = 1.25f - 0.25f * e; break;
+            case SPIN_SLAM: tr.alpha = e; tr.rotZ = -120f + 120f * e; tr.scale = 1.3f - 0.3f * e; break;
+            case SQUEEZE_SNAP: tr.alpha = e; tr.squeezeX = 0.5f + 0.5f * e; break;
+            case COMPRESSION_SPIN: tr.alpha = e; tr.rotZ = -90f + 90f * e; tr.squeezeX = 0.6f + 0.4f * e; break;
+            case ASH_SPREAD: case PETAL_WIND: tr.alpha = e; tr.revealRadius = e; tr.circleReveal = true; tr.grain = 0.4f * bell(p); break;
+            case DRAG_SWITCH: tr.dx = 1f - e; tr.squeezeX = 0.7f + 0.3f * e; tr.alpha = 1f; break;
+
+            case CAMERA_PUSH: case ZOOM_CAMERA: case FAST_PUSH: tr.alpha = 1f; tr.scale = 1.4f - 0.4f * e;
+                tr.blurAmount = (t == TransitionType.FAST_PUSH ? 0.6f : 0.3f) * bell(p); tr.dx = (t == TransitionType.FAST_PUSH ? 0.5f : 0f) * (1f - e); break;
+            case CAMERA_PULL: case FAST_PULL: tr.alpha = 1f; tr.scale = 0.7f + 0.3f * e;
+                tr.blurAmount = (t == TransitionType.FAST_PULL ? 0.5f : 0.2f) * bell(p); break;
+            case WHIP_PAN: tr.alpha = e; tr.dx = 1f - e; tr.blurAmount = 0.9f * bell(p); tr.blurDirection = 1f; tr.scale = 1.08f - 0.08f * e; break;
+            case ZOOM_SNAP: tr.alpha = 1f; tr.scale = 1.5f - 0.5f * e; break;
+            case DOLLY_ZOOM: tr.alpha = e; tr.scale = 0.6f + 0.4f * e; tr.squeezeY = 1.12f - 0.12f * e; break;
+            case CAMERA_SHAKE: case FILM_SHAKE: tr.alpha = e; jitter(tr, p, t == TransitionType.CAMERA_SHAKE ? 0.05f : 0.035f);
+                if (t == TransitionType.FILM_SHAKE) tr.grain = 0.3f; break;
+            case SHAKE_SHIFT: tr.alpha = 1f; jitter(tr, p, 0.06f); tr.dx = 0.8f * (1f - e); break;
+            case CAMERA_ROTATE: tr.alpha = e; tr.rotZ = -90f + 90f * e; break;
+            case CAMERA_ROLL: tr.alpha = e; tr.rotZ = -180f + 180f * e; tr.scale = 0.8f + 0.2f * e; break;
+            case ORBIT_SPIN: tr.rotY = -180f + 180f * e; tr.scale = 0.7f + 0.3f * e; tr.alpha = e > .5f ? 1f : 0f; return;
+
+            case CUBE_3D: tr.rotY = -90f + 90f * e; tr.dx = -0.5f + 0.5f * e; tr.alpha = e > .5f ? 1f : 0f; return;
+            case FLIP_3D: tr.rotX = -90f + 90f * e; tr.alpha = e > .5f ? 1f : 0f; return;
+            case ROTATE_3D: tr.rotY = -180f + 180f * e; tr.rotZ = -90f + 90f * e; tr.alpha = e > .5f ? 1f : 0f; return;
+            case PAGE_TURN_3D: tr.rotY = -80f + 80f * e; tr.dx = -0.3f + 0.3f * e; tr.alpha = e > .4f ? 1f : 0f; return;
+            case CARD_3D: tr.rotX = -90f + 90f * e; tr.scale = 0.8f + 0.2f * e; tr.alpha = e > .5f ? 1f : 0f; return;
+            case DOOR_3D: tr.rotY = -80f + 80f * e; tr.alpha = e > .4f ? 1f : 0f; return;
+            case FOLD_3D: tr.rotX = -90f + 90f * e; tr.squeezeY = 0.5f + 0.5f * e; tr.alpha = e > .5f ? 1f : 0f; return;
+            case TUNNEL_3D: case WISP_PORTAL: tr.alpha = e; tr.scale = 0.4f + 0.6f * e; tr.rotZ = -20f + 20f * e;
+                if (t == TransitionType.WISP_PORTAL) tr.blurAmount = 0.4f * bell(p); break;
+            case CAROUSEL_3D: tr.rotY = -120f + 120f * e; tr.dx = -0.4f + 0.4f * e; tr.alpha = e > .5f ? 1f : 0f; return;
+            case PARALLAX_3D: tr.rotY = -45f + 45f * e; tr.dx = -0.25f + 0.25f * e; tr.alpha = e; break;
+            case DEPTH_ZOOM_3D: tr.alpha = e; tr.scale = 0.5f + 0.5f * e; tr.rotY = -25f + 25f * e; break;
+            case DARK_SCALE: tr.alpha = e; tr.scale = 1.35f - 0.35f * e; break;
+
+            case MOTION_BLUR_X: case BLUR_PUSH: case BLUR_DIRECTIONAL:
+                tr.alpha = e; tr.blurAmount = 0.9f * bell(p); tr.dx = 0.4f * (1f - e); tr.blurDirection = 1f; break;
+            case RADIAL_BLUR: tr.alpha = e; tr.blurAmount = 0.9f * bell(p); tr.rotZ = -15f * bell(p); tr.scale = 1.1f - 0.1f * e; break;
+            case ZOOM_BLUR_X: tr.alpha = e; tr.blurAmount = 0.9f * bell(p); tr.scale = 1.25f - 0.25f * e; break;
+            case SOFT_BLUR: case DREAM_BLUR: case DEFOCUS: tr.alpha = e; tr.blurAmount = 0.8f * bell(p); break;
+            case FAST_BLUR: tr.alpha = e; tr.blurAmount = bell(p); tr.dx = 0.6f * (1f - e); tr.blurDirection = 1f; break;
+            case BLUR_SWITCH: tr.alpha = e; tr.blurAmount = 0.8f * bell(p); tr.scale = 1.2f - 0.2f * e; break;
+            case BLUR_FADE: tr.alpha = e; tr.blurAmount = 0.7f * bell(p); break;
+            case BLUR_WIPE: tr.revealRadius = e; tr.wipeAxis = 0; tr.wipeSign = 1f; tr.blurAmount = 0.6f * bell(p); tr.alpha = 1f; break;
+            case BLUR_SPIN: tr.alpha = e; tr.blurAmount = 0.7f * bell(p); tr.rotZ = -60f + 60f * e; break;
+
+            case RGB_SPLIT: case RGB_WAVE: case CHROME_WAVE: tr.alpha = e; tr.chroma = 0.9f * bell(p); jitter(tr, p, 0.02f);
+                if (t == TransitionType.CHROME_WAVE) tr.squeezeX = 1f - 0.1f * (float) Math.sin(p * 18.8f); break;
+            case GLITCH: case PIXEL_GLITCH: tr.alpha = e; tr.chroma = 0.7f * bell(p); tr.strip = bell(p); jitter(tr, p, 0.05f); break;
+            case VHS_GLITCH: tr.alpha = e; tr.chroma = 0.5f * bell(p); tr.strip = 0.8f * bell(p); jitter(tr, p, 0.03f); break;
+            case SCANLINE_GLITCH: tr.alpha = e; tr.grain = 0.6f * bell(p); tr.strip = 0.5f * bell(p); break;
+            case DIGITAL_NOISE: tr.alpha = e; tr.grain = 0.9f * bell(p); tr.chroma = 0.3f * bell(p); break;
+            case TEAR_H: tr.alpha = e; tr.strip = bell(p); tr.dx = -0.08f * tri(p * 6f); break;
+            case TEAR_V: tr.alpha = e; tr.strip = bell(p); tr.dy = -0.06f * tri(p * 6f); break;
+            case PIXEL_STRETCH: tr.alpha = e; tr.strip = bell(p); tr.squeezeX = 1.4f - 0.4f * e; break;
+
+            case WHITE_FLASH: case CAMERA_FLASH: case GLOW_FLASH: case NEON_FLASH:
+            case FILM_FLASH: case SOFT_FLASH: case SUNSET_FLASH: case LENS_FLARE:
+            case LIGHT_SWEEP: case FLASH_WIPE: case GLARE:
+                tr.alpha = p < 0.35f ? 0f : (p - 0.35f) / 0.65f; tr.scale = 1.1f - 0.1f * e;
+                tr.overlayColor = 0xFFFFFFFF; tr.overlayAlpha = bell(p); break;
+            case BLACK_FLASH: case BLACKOUT_SWIPE:
+                tr.alpha = p < 0.5f ? 0f : (p - 0.5f) * 2f;
+                tr.overlayColor = 0xFF000000; tr.overlayAlpha = bell(p); break;
+            case STROBE: tr.alpha = tri(p * 6f) > 0.5f ? 1f : 0.4f; break;
+
+            case FILM_BURN: tr.alpha = e; tr.grain = 0.4f * bell(p); break;
+            case FILM_ROLL: tr.alpha = e; tr.dy = 1f - e; tr.rotZ = -8f + 8f * e; break;
+            case FILM_GRAIN_X: case DUST_X: case SCRATCH_X: case DUST_FLURRY: tr.alpha = e; tr.grain = 0.7f * bell(p); break;
+            case CINEMATIC_PUSH: tr.alpha = 1f; tr.dx = 0.8f * (1f - e); tr.scale = 1.1f - 0.1f * e; break;
+            case FILM_ERASE: tr.alpha = e; tr.grain = 0.8f * bell(p); break;
+
+            case LIQUID_STRETCH: tr.alpha = e; tr.squeezeX = 0.6f + 0.4f * e; tr.dx = 0.3f * (1f - e); break;
+            case RIPPLE_X: tr.alpha = e; tr.scale = 1f + 0.08f * (float) Math.sin((1f - p) * 18.8f); break;
+            case WAVE_WARP: tr.alpha = e; tr.squeezeX = 1f - 0.12f * (float) Math.sin(p * 12.6f); jitter(tr, p, 0.015f); break;
+            case LENS_WARP: tr.alpha = e; tr.scale = 1.25f - 0.25f * e; tr.blurAmount = 0.2f * bell(p); break;
+            case BULGE: case BULGE_BLING: tr.alpha = e; tr.scale = 1.35f - 0.35f * bell(p); tr.squeezeX = 1.15f - 0.15f * bell(p);
+                if (t == TransitionType.BULGE_BLING) tr.grain = 0.5f * tri(p * 10f); break;
+            case PINCH: tr.alpha = e; tr.scale = 0.7f + 0.3f * bell(p); break;
+            case SWIRL: tr.alpha = e; tr.rotZ = -120f * bell(p) + 24f * e; tr.scale = 0.8f + 0.2f * e; break;
+            case TWIST: tr.alpha = e; tr.rotZ = -90f + 90f * e; tr.squeezeX = 0.7f + 0.3f * e; break;
+            case HEAT_WAVE: tr.alpha = e; tr.squeezeY = 1f - 0.08f * (float) Math.sin(p * 25.1f); tr.blurAmount = 0.15f * bell(p); break;
+            case ELASTIC: tr.alpha = e; tr.scale = 0.75f + 0.25f * e + 0.2f * Math.abs((float) Math.sin((1f - p) * 12.6f)) * (1f - p); break;
+            case MELT: tr.alpha = e; tr.squeezeY = 0.5f + 0.5f * e; tr.dy = -0.3f * (1f - e); break;
+
+            case TWINKLE_ZOOM: tr.alpha = e; tr.scale = 1.3f - 0.3f * e; tr.grain = 0.5f * tri(p * 8f); break;
+            case GALLERY_SLIDE: tr.alpha = 1f; tr.dx = 1f - e; break;
+            case GALLERY_ZOOM: tr.alpha = e; tr.scale = 1.3f - 0.3f * e; break;
+            case RANDOM_GALLERY: tr.alpha = e; tr.scale = 1.3f - 0.3f * e; jitter(tr, p, 0.03f); break;
+            case WILDFIRE_SCAN: tr.revealRadius = e; tr.wipeAxis = 0; tr.wipeSign = 1f; tr.overlayColor = 0xFFFF5A2C; tr.overlayAlpha = 0.5f * bell(p); tr.alpha = 1f; break;
+            default: tr.alpha = e; break;
+        }
     }
 
     /**

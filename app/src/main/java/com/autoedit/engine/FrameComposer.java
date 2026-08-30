@@ -91,48 +91,47 @@ public class FrameComposer {
     private void drawTransition(EditProject project, Canvas canvas, Timeline.Point at,
                                 float mix, int w, int h, BitmapSource source, float timeSec)
             throws IOException {
-        TransitionType tt = junctionTransition(at.clip, at.clipIndex);
+        TransitionType tt;
+        TransitionPreset preset;
+        try {
+            preset = junctionPreset(at.clip, at.clipIndex);
+            tt = preset != null ? preset.type : junctionTransition(at.clip, at.clipIndex);
+        } catch (Throwable bad) {
+            // never let a bad transition crash render/export — fall back to Fade.
+            preset = TransitionRegistry.fallback();
+            tt = preset.type;
+        }
         if (tt == TransitionType.NONE || tt == TransitionType.CUT) return;
 
-        TransitionEngine.Transform in = transitions.incoming(tt, mix);
-        TransitionEngine.Transform out = transitions.outgoing(tt, mix);
+        TransitionEngine.Transform in = preset != null ? transitions.incoming(preset, mix) : transitions.incoming(tt, mix);
+        TransitionEngine.Transform out = preset != null ? transitions.outgoing(preset, mix) : transitions.outgoing(tt, mix);
 
         if (transitions.fadesThroughBackground(tt)) {
             overlayPaint.reset();
             overlayPaint.setColor(tt == TransitionType.DIP_TO_WHITE ? 0xFFFFFFFF : 0xFF000000);
-            overlayPaint.setAlpha((int) (255 * clamp01(in.alpha * (tt == TransitionType.FADE ? 1f : 1f))));
+            overlayPaint.setAlpha((int) (255 * clamp01(in.alpha)));
             canvas.drawRect(0, 0, w, h, overlayPaint);
         }
 
-        // Outgoing clip: redraw only when the transform actually moved it.
-        if (out.dx != 0f || out.dy != 0f || out.scale != 1f || out.blurAmount > 0f
-                || transitions.outgoingAlpha(tt, mix) < 1f) {
-            drawClip(canvas, at.clip, at.clipIndex, at.progress, w, h, project.fitMode, source,
-                    transitions.outgoingAlpha(tt, mix), out.scale, out.dx, out.dy,
-                    0f, out.blurAmount, out.blurDirection == 0f ? null : new float[]{out.blurDirection, 0f},
-                    timeSec);
+        // Outgoing clip: redraw when the transform moved/faded it.
+        if (out.alpha < 0.999f || out.dx != 0f || out.dy != 0f || out.scale != 1f
+                || out.blurAmount > 0f || out.rotZ != 0f || out.rotX != 0f || out.rotY != 0f
+                || out.squeezeX != 1f || out.squeezeY != 1f || out.chroma > 0f || out.shakeX != 0f || out.shakeY != 0f) {
+            drawClipT(canvas, at.clip, at.clipIndex, at.progress, w, h, project.fitMode, source, out, timeSec);
         }
 
-        // Incoming clip, with its reveal / wipe mask.
+        // Incoming clip, with its reveal / wipe / shape mask.
         TimelineClip next = project.clips.get(at.clipIndex + 1);
         drawIncoming(canvas, next, at.clipIndex + 1, in, w, h, project.fitMode, source, timeSec);
 
-        // Full-frame washes.
-        if (out.overlayAlpha > 0.001f) {
-            overlayPaint.reset();
-            overlayPaint.setColor(out.overlayColor);
-            overlayPaint.setAlpha((int) (255 * clamp01(out.overlayAlpha)));
-            canvas.drawRect(0, 0, w, h, overlayPaint);
-        }
-        if (in.overlayAlpha > 0.001f) {
-            overlayPaint.reset();
-            overlayPaint.setColor(in.overlayColor);
-            overlayPaint.setAlpha((int) (255 * clamp01(in.overlayAlpha)));
-            canvas.drawRect(0, 0, w, h, overlayPaint);
-        }
+        // Full-frame washes (flash/light/dip) + grain.
+        TransitionDraw.drawOverlay(canvas, w, h, out);
+        TransitionDraw.drawOverlay(canvas, w, h, in);
+        if (in.grain > 0.02f || out.grain > 0.02f)
+            TransitionDraw.drawGrain(canvas, w, h, Math.max(in.grain, out.grain) * 0.7f, in.seed + mix);
         if (transitions.flashes(tt)) {
             int fa = (int) (255 * (1f - Math.abs(mix - .5f) * 2f));
-            if (fa > 0) {
+            if (fa > 0 && in.overlayAlpha <= 0.001f && out.overlayAlpha <= 0.001f) {
                 overlayPaint.reset();
                 overlayPaint.setColor(transitions.flashColor(tt));
                 overlayPaint.setAlpha(fa);
@@ -141,32 +140,34 @@ public class FrameComposer {
         }
     }
 
+    /** Library preset stored on the clip that owns the junction (null → raw enum). */
+    private TransitionPreset junctionPreset(TimelineClip clip, int clipIndex) {
+        TransitionType pattern = formulas.transitionForClip(clip.formula, clipIndex);
+        if (pattern != null && pattern != TransitionType.NONE && pattern != TransitionType.CUT) return null;
+        if (clip.transitionPresetId != null && !clip.transitionPresetId.isEmpty())
+            return TransitionRegistry.byId(clip.transitionPresetId);
+        return null;
+    }
+
     private void drawIncoming(Canvas canvas, TimelineClip clip, int clipIndex,
                               TransitionEngine.Transform tr, int w, int h, FitMode fitMode,
                               BitmapSource source, float timeSec) throws IOException {
-        boolean masked = tr.revealRadius > 0f && tr.revealRadius < 1f;
-        int saved = canvas.save();
-        if (masked) {
-            Path path = new Path();
-            if (tr.circleReveal) {
-                float maxR = (float) Math.hypot(w, h) / 2f;
-                float r = tr.revealInverse ? maxR * tr.revealRadius : maxR * tr.revealRadius;
-                path.addCircle(w / 2f + tr.dx * w, h / 2f + tr.dy * h, Math.max(1f, r), Path.Direction.CW);
-            } else {
-                float cover = Math.max(w, h) * 1.2f;
-                float ext = cover * tr.revealRadius;
-                float cx = w / 2f, cy = h / 2f;
-                RectF r = tr.wipeAxis == 1
-                        ? new RectF(cx - (tr.wipeSign < 0 ? ext : 0), -cover, cx + (tr.wipeSign > 0 ? ext : 0), h + cover)
-                        : new RectF(-cover, cy - (tr.wipeSign < 0 ? ext : 0), w + cover, cy + (tr.wipeSign > 0 ? ext : 0));
-                path.addRect(r, Path.Direction.CW);
-            }
-            canvas.clipPath(path);
-        }
-        drawClip(canvas, clip, clipIndex, 0f, w, h, fitMode, source,
-                tr.alpha, tr.scale, tr.dx, tr.dy, 0f, tr.blurAmount,
-                tr.blurDirection == 0f ? null : new float[]{tr.blurDirection, 0f}, timeSec);
-        canvas.restoreToCount(saved);
+        int maskSave = TransitionDraw.clipReveal(canvas, w, h, tr);
+        drawClipT(canvas, clip, clipIndex, 0f, w, h, fitMode, source, tr, timeSec);
+        if (maskSave >= 0) canvas.restoreToCount(maskSave);
+    }
+
+    /** Draws one transition layer (outgoing or incoming) with the full Transform. */
+    private void drawClipT(Canvas canvas, TimelineClip clip, int clipIndex, float progress,
+                           int w, int h, FitMode fitMode, BitmapSource source,
+                           TransitionEngine.Transform tr, float timeSec) throws IOException {
+        float[] smear = tr.blurDirection != 0f ? new float[]{tr.blurDirection, 0f} : null;
+        int layer = TransitionDraw.apply(canvas, w / 2f, h / 2f, tr);
+        TransitionDraw.applySqueeze(canvas, w / 2f, h / 2f, tr);
+        drawClip(canvas, clip, clipIndex, progress, w, h, fitMode, source,
+                tr.alpha, tr.scale, tr.dx + tr.shakeX, tr.dy + tr.shakeY,
+                0f, tr.blurAmount, smear, tr.chroma, timeSec);
+        canvas.restoreToCount(layer);
     }
 
     // ---------------------------------------------------------------- one clip
@@ -184,6 +185,16 @@ public class FrameComposer {
                           int w, int h, FitMode fitMode, BitmapSource source,
                           float alphaMul, float exScale, float dx, float dy,
                           float extraBlur, float transitionBlur, float[] smearDir, float timeSec)
+            throws IOException {
+        drawClip(canvas, clip, clipIndex, progress, w, h, fitMode, source,
+                alphaMul, exScale, dx, dy, extraBlur, transitionBlur, smearDir, 0f, timeSec);
+    }
+
+    private void drawClip(Canvas canvas, TimelineClip clip, int clipIndex, float progress,
+                          int w, int h, FitMode fitMode, BitmapSource source,
+                          float alphaMul, float exScale, float dx, float dy,
+                          float extraBlur, float transitionBlur, float[] smearDir,
+                          float extraChroma, float timeSec)
             throws IOException {
         Bitmap b = source.get(clip.uri, w, h);
         if (b == null || b.isRecycled()) throw new IOException("Invalid source image: " + clip.uri);
@@ -224,7 +235,7 @@ public class FrameComposer {
 
         // ---- 3. effects: colour pass -----------------------------------------
         float blur = Math.max(extraBlur, transitionBlur);
-        float channelShift = 0f;
+        float channelShift = extraChroma * 0.9f;   // glitch/RGB-split transitions
         boolean drawn = false;
         for (int i = 0; i < layers.size(); i++) {
             EffectLayer l = layers.get(i);

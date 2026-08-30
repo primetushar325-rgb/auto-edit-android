@@ -1190,52 +1190,233 @@ public class MainActivity extends Activity {
         return a != null && a.id != null && a.id.equals(id);
     }
 
+    // --- CapCut-style transition library (v1.7) ---
+    private TransitionPreset selectedPreset = null;
+    private TransitionCategory transCat = TransitionCategory.TRENDING;
+    private String transSearch = "";
+    private boolean transLibOpen = false;
+    private float transDuration = 0.5f;
+
     private void transitionPanel() {
         openTool("transition");
         boolean junctionScoped = transitionScopeClip >= 0 && transitionScopeClip + 1 < project.clips.size();
         String scope;
         if (junctionScoped) scope = "Junction clip " + (transitionScopeClip + 1) + " → " + (transitionScopeClip + 2);
-        else scope = selected >= 0 ? "Clip " + project.clips.get(selected).index : "ALL clips";
+        else scope = selected >= 0 ? "Clip " + project.clips.get(selected).index : "ALL boundaries";
+        if (!transLibOpen) seedPresetSelection(junctionScoped);
+        transLibOpen = true;
+
         PanelSheet s = sheet();
-        openSheet("Transition → " + scope);
+        s.content().removeAllViews();
+        s.applyBar().removeAllViews();
+        openSheet("Transitions → " + scope);
 
-        TransitionType current = null;
-        if (junctionScoped) current = project.clips.get(transitionScopeClip).transition;
-        else if (selected >= 0) current = project.clips.get(selected).transition;
+        // ---- search box ----
+        EditText search = new EditText(this);
+        search.setHint("🔍 Search — zoom, blur, glitch, 3d, flash…");
+        search.setSingleLine(true);
+        search.setTextColor(AeDesign.TEXT);
+        search.setHintTextColor(AeDesign.MUTED);
+        search.setText(transSearch);
+        search.setBackground(AeDesign.bg(AeDesign.SURFACE, dp(14), AeDesign.STROKE, 1));
+        search.setPadding(dp(12), dp(10), dp(12), dp(10));
+        search.addTextChangedListener(new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence a, int b, int c, int d) {}
+            public void onTextChanged(CharSequence a, int b, int c, int d) {}
+            public void afterTextChanged(android.text.Editable e) {
+                transSearch = e.toString().trim();
+                transCat = transSearch.isEmpty() ? TransitionCategory.TRENDING : null;
+                transitionPanel();
+            }
+        });
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
+        slp.setMargins(0, dp(2), 0, dp(8));
+        s.content().addView(search, slp);
 
-        TransitionType[] vals = TransitionEngine.rendered();
-        LinearLayout row = sheetCardsRow(s);
-        for (TransitionType t : vals) {
-            TransitionPreviewView tpv = new TransitionPreviewView(this);
-            tpv.setTransition(t);
-            boolean isSel = selectedTransition != null ? selectedTransition == t : current == t;
-            LinearLayout card = previewCard(tpv, TransitionEngine.label(t),
-                    t == TransitionType.NONE ? "No transition" : "Between clips", isSel);
-            card.setContentDescription("Transition " + TransitionEngine.label(t) + (isSel ? ", selected" : ""));
-            AeDesign.tap(card, () -> { selectedTransition = t; transitionPanel(); });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-            lp.setMargins(dp(4), dp(4), dp(4), dp(6));
-            row.addView(card, lp);
+        // ---- category tabs (horizontal scroll) ----
+        HorizontalScrollView tabScroll = new HorizontalScrollView(this);
+        tabScroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout tabs = row();
+        for (TransitionCategory cat : TransitionCategory.values()) {
+            final TransitionCategory c = cat;
+            TextView tab = label(cat.label, 13, transCat == cat ? 0xff041018 : AeDesign.TEXT, Typeface.BOLD);
+            tab.setGravity(Gravity.CENTER);
+            tab.setPadding(dp(12), dp(8), dp(12), dp(8));
+            tab.setBackground(AeDesign.bg(transCat == cat ? AeDesign.ACCENT : AeDesign.SURFACE_2, dp(16),
+                    transCat == cat ? AeDesign.ACCENT : AeDesign.STROKE, 1));
+            AeDesign.press(tab, () -> { transCat = c; transSearch = ""; transitionPanel(); });
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(-2, -2);
+            tlp.setMargins(dp(3), dp(2), dp(3), dp(6));
+            tab.setLayoutParams(tlp);
+            tabs.addView(tab);
         }
-        sheetHint(s, "Tap a card to SELECT, then APPLY. Every transition is rendered in preview AND export with shared math.");
+        tabScroll.addView(tabs);
+        s.content().addView(tabScroll, new LinearLayout.LayoutParams(-1, -2));
+
+        // ---- selected line + duration chips ----
+        s.content().addView(label(selectedPreset == null ? "Selected: none — tap a card" : "Selected: " + selectedPreset.name,
+                13, selectedPreset == null ? AeDesign.MUTED : AeDesign.ACCENT, Typeface.BOLD));
+        HorizontalScrollView durScroll = new HorizontalScrollView(this);
+        durScroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout durRow = row();
+        for (float d : new float[]{0.2f, 0.3f, 0.5f, 0.7f, 1.0f, 1.5f, 2.0f}) {
+            final float d2 = d;
+            String ds = d < 1f ? (d == 0.2f ? "0.2s" : d == 0.3f ? "0.3s" : d == 0.5f ? "0.5s" : "0.7s") : ((int) d) + "s";
+            TextView dc = label(ds, 12, Math.abs(d - transDuration) < 0.02f ? 0xff041018 : AeDesign.TEXT, Typeface.BOLD);
+            dc.setGravity(Gravity.CENTER);
+            dc.setPadding(dp(12), dp(7), dp(12), dp(7));
+            dc.setBackground(AeDesign.bg(Math.abs(d - transDuration) < 0.02f ? AeDesign.ACCENT_2 : AeDesign.SURFACE_2,
+                    dp(14), AeDesign.STROKE, 1));
+            AeDesign.press(dc, () -> { transDuration = clampTransDuration(d2); transitionPanel(); });
+            LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(-2, -2);
+            dlp.setMargins(dp(3), dp(2), dp(3), dp(4));
+            dc.setLayoutParams(dlp);
+            durRow.addView(dc);
+        }
+        durScroll.addView(durRow);
+        s.content().addView(durScroll, new LinearLayout.LayoutParams(-1, -2));
+
+        // ---- recently used row (if any, and not already on Recent tab) ----
+        if ((transCat == null || transCat != TransitionCategory.RECENT) && !recentPresets().isEmpty()) {
+            s.content().addView(label("Recently used", 12, AeDesign.MUTED, Typeface.BOLD));
+            LinearLayout rrow = sheetCardsRow(s);
+            for (TransitionPreset p : recentPresets()) addTransitionCard(rrow, p, true);
+        }
+
+        // ---- main grid for the active category / search ----
+        java.util.List<TransitionPreset> items;
+        boolean isRecent = false, isFav = false;
+        if (transSearch != null && !transSearch.isEmpty()) {
+            items = TransitionRegistry.search(transSearch);
+            s.content().addView(label("Search: " + transSearch + "  (" + items.size() + ")", 12, AeDesign.MUTED, Typeface.NORMAL));
+        } else if (transCat == TransitionCategory.RECENT) {
+            items = recentPresets(); isRecent = true;
+            if (items.isEmpty()) s.content().addView(label("No recent transitions yet — apply one and it shows here.", 12, AeDesign.MUTED, Typeface.NORMAL));
+        } else if (transCat == TransitionCategory.FAVORITES) {
+            items = favoritePresets(); isFav = true;
+            if (items.isEmpty()) s.content().addView(label("No favourites yet — tap ♥ on a card.", 12, AeDesign.MUTED, Typeface.NORMAL));
+        } else if (transCat == TransitionCategory.TRENDING) {
+            items = TransitionRegistry.trending();
+        } else {
+            items = TransitionRegistry.byCategory(transCat == null ? TransitionCategory.BASIC : transCat);
+        }
+        LinearLayout grid = sheetCardsRow(s);
+        for (TransitionPreset p : items) addTransitionCard(grid, p, false);
+        if (items.isEmpty() && transSearch != null && !transSearch.isEmpty())
+            s.content().addView(label("No transitions match \"" + transSearch + "\".", 12, AeDesign.MUTED, Typeface.NORMAL));
+
+        sheetHint(s, "Tap a card to SELECT (no change yet), set duration, then APPLY to this junction or to ALL. Every card is a live preview using the SAME math as export. Undo-safe.");
+
+        // ---- apply bar: junction OR selected/all ----
         if (junctionScoped) {
             Button apply = AeDesign.button(this, "APPLY TO JUNCTION", true);
-            AeDesign.press(apply, () -> {
-                if (selectedTransition != null) { applyTransitionAt(transitionScopeClip, selectedTransition); afterApply("Transition set"); }
-            });
-            s.applyBar().addView(apply, new LinearLayout.LayoutParams(-1, dp(48)));
+            AeDesign.press(apply, () -> applySelectedPreset(false));
+            Button all = AeDesign.button(this, "APPLY TO ALL (" + project.clips.size() + ")", false);
+            AeDesign.press(all, () -> applySelectedPreset(true));
+            LinearLayout bar = row();
+            bar.addView(apply, new LinearLayout.LayoutParams(0, dp(48), 1));
+            LinearLayout.LayoutParams allp = new LinearLayout.LayoutParams(0, dp(48), 1);
+            allp.leftMargin = dp(8);
+            bar.addView(all, allp);
+            s.applyBar().addView(bar, new LinearLayout.LayoutParams(-1, -2));
         } else {
-            addApplyButtons(s, "APPLY TRANSITION TO",
-                    () -> { if (selectedTransition != null) { applyTransitionAt(selected, selectedTransition); afterApply("Transition set"); } },
-                    () -> { if (selectedTransition != null) { applyTransitionToAll(selectedTransition); afterApply("Transition applied to all"); } });
+            addApplyButtons(s, "APPLY",
+                    () -> applySelectedPreset(false),
+                    () -> applySelectedPreset(true));
         }
     }
 
-    private void applyTransitionToAll(TransitionType t) {
+    private void seedPresetSelection(boolean junctionScoped) {
+        selectedPreset = null;
+        try {
+            int idx = junctionScoped ? transitionScopeClip : selected;
+            if (idx >= 0 && idx < project.clips.size()) {
+                TimelineClip c = project.clips.get(idx);
+                if (c.transitionPresetId != null) selectedPreset = TransitionRegistry.byId(c.transitionPresetId);
+                if (selectedPreset == null && c.transition != TransitionType.NONE)
+                    for (TransitionPreset p : TransitionRegistry.all()) if (p.type == c.transition) { selectedPreset = p; break; }
+                transDuration = c.transitionDurationSec;
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private float clampTransDuration(float d) {
+        float cap = Float.MAX_VALUE;
+        for (TimelineClip c : project.clips) cap = Math.min(cap, c.durationSec / 2f);
+        return Math.max(0.1f, Math.min(d, Math.min(cap, 2.0f)));
+    }
+
+    private java.util.List<TransitionPreset> recentPresets() {
+        ArrayList<TransitionPreset> out = new ArrayList<>();
+        for (String id : RecentsStore.recentIds(this, "transition")) {
+            TransitionPreset p = TransitionRegistry.byId(id); // invalid ids ignored safely
+            if (p != null) out.add(p);
+        }
+        return out;
+    }
+    private java.util.List<TransitionPreset> favoritePresets() {
+        ArrayList<TransitionPreset> out = new ArrayList<>();
+        String prefix = "transition:";
+        for (String key : FavoritesStore.all(this))
+            if (key.startsWith(prefix)) {
+                TransitionPreset p = TransitionRegistry.byId(key.substring(prefix.length()));
+                if (p != null) out.add(p);
+            }
+        return out;
+    }
+
+    /** One animated transition card (live preview + name + favourite). Tap = SELECT only. */
+    private void addTransitionCard(LinearLayout parent, TransitionPreset p, boolean compact) {
+        TransitionPreviewView tpv = new TransitionPreviewView(this);
+        tpv.setTransition(p);
+        boolean isSel = selectedPreset != null && selectedPreset.id.equals(p.id);
+        String sub = p.category.label + (p.isTrending ? " • 🔥" : "") + (p.isNew ? " • NEW" : "");
+        LinearLayout card = previewCard(tpv, p.name, sub, isSel);
+        // favourite heart overlaid on the preview
+        TextView heart = label(FavoritesStore.isFavorite(this, "transition", p.id) ? "♥" : "♡",
+                14, FavoritesStore.isFavorite(this, "transition", p.id) ? 0xFFFFC84D : 0xFFFFFFFF, Typeface.BOLD);
+        heart.setPadding(dp(6), dp(2), dp(6), dp(2));
+        // heart lives at the bottom-left under the check; attach to card
+        AeDesign.press(heart, () -> { FavoritesStore.toggle(this, "transition", p.id); transitionPanel(); });
+        LinearLayout hl = col(); hl.setGravity(Gravity.CENTER_HORIZONTAL); hl.addView(heart);
+        card.addView(hl, new LinearLayout.LayoutParams(-1, -2));
+        AeDesign.tap(card, () -> { selectedPreset = p; transDuration = clampTransDuration(p.defaultDuration); transitionPanel(); });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMargins(dp(4), dp(4), dp(4), dp(6));
+        parent.addView(card, lp);
+    }
+
+    /** SELECTED → APPLY: records a recent, mutates via one undo, preview + export both use it. */
+    private void applySelectedPreset(boolean toAll) {
+        if (selectedPreset == null) { toast("First tap a transition to select it"); return; }
+        TransitionPreset p = selectedPreset;
+        float dur = clampTransDuration(transDuration);
         pushUndo();
-        for (TimelineClip c : project.clips) c.transition = t;
-        saveProject(true);
-        if (preview != null) preview.invalidate();
+        try {
+            if (toAll) {
+                for (TimelineClip c : project.clips) applyPresetTo(c, p, dur);
+            } else if (transitionScopeClip >= 0 && transitionScopeClip < project.clips.size()) {
+                applyPresetTo(project.clips.get(transitionScopeClip), p, dur);
+            } else if (selected >= 0 && selected < project.clips.size()) {
+                applyPresetTo(project.clips.get(selected), p, dur);
+            } else {
+                for (TimelineClip c : project.clips) applyPresetTo(c, p, dur);
+            }
+            RecentsStore.record(this, "transition", p.id);
+            saveProject(true);
+            afterApply((p.type == TransitionType.NONE ? "Transition removed" : p.name + " applied")
+                    + (toAll ? " to all boundaries" : "") + " • " + dur + "s");
+            transLibOpen = false;
+        } catch (Exception e) {
+            Log.e(TAG, "apply transition failed", e);
+            toast("Transition failed — previous kept"); // never crash; keep prior state
+        }
+    }
+
+    private void applyPresetTo(TimelineClip c, TransitionPreset p, float dur) {
+        c.transitionPresetId = p.type == TransitionType.NONE ? null : p.id;
+        c.transition = p.type;             // raw enum kept for legacy/fallback
+        c.transitionDurationSec = dur;
     }
 
     private void textStudio() {

@@ -14,5 +14,64 @@ public enum TransitionType {
     CIRCLE_REVEAL, RADIAL_REVEAL, BLUR_TRANSITION, FLASH, SMOOTH_LIGHT, CINEMATIC_BLUR,
     // ---- added (spec §9) ----
     CUT, DIP_TO_BLACK, DIP_TO_WHITE, LIGHT_LEAK, WHIP, DIRECTIONAL_BLUR,
-    CIRCLE_CLOSE, SMOOTH_REVEAL, CINEMATIC_DISSOLVE
+    CIRCLE_CLOSE, SMOOTH_REVEAL, CINEMATIC_DISSOLVE,
+
+    // ===== CapCut library render families (v1.7) — see TransitionRegistry =====
+    // fades / wipes / masks / shapes
+    FADE_SCAN, FADE_DIRECTIONAL, FADE_WIPE, GRADUAL_FADE, FAKE_ZOOM, ZOOM_IN, ZOOM_OUT,
+    ZOOM_SWITCH, MIRROR_ZOOM, QUAKY_ZOOM, DIAGONAL_WIPE, CORNER_WIPE, COVER,
+    REVEAL_SLIDE, SPLIT_WIPE, CENTER_WIPE, SHAPE_REVEAL, FUZZY_CIRCLE,
+    TELEPORT_SHAKE, SPIN_SLAM, SQUEEZE_SNAP, ASH_SPREAD, DRAG_SWITCH,
+    // camera
+    CAMERA_PUSH, CAMERA_PULL, ZOOM_SNAP, DOLLY_ZOOM, CAMERA_SHAKE, CAMERA_ROTATE,
+    CAMERA_ROLL, ORBIT_SPIN,
+    // 3D (real perspective)
+    CUBE_3D, FLIP_3D, ROTATE_3D, PAGE_TURN_3D, CARD_3D, DOOR_3D, FOLD_3D,
+    TUNNEL_3D, CAROUSEL_3D, PARALLAX_3D, DEPTH_ZOOM_3D,
+    // blur
+    MOTION_BLUR_X, RADIAL_BLUR, ZOOM_BLUR_X, SOFT_BLUR, DREAM_BLUR, FAST_BLUR,
+    BLUR_SWITCH, BLUR_FADE, BLUR_WIPE, BLUR_SPIN, BLUR_PUSH, DEFOCUS,
+    // glitch
+    RGB_SPLIT, GLITCH, VHS_GLITCH, SCANLINE_GLITCH, PIXEL_GLITCH, TEAR_H, TEAR_V,
+    RGB_WAVE, DIGITAL_NOISE, PIXEL_STRETCH,
+    // flash / light
+    WHITE_FLASH, BLACK_FLASH, CAMERA_FLASH, SUNSET_FLASH, STROBE, SOFT_FLASH,
+    GLOW_FLASH, LENS_FLARE, LIGHT_SWEEP, NEON_FLASH, FILM_FLASH, FLASH_WIPE, GLARE,
+    BLACKOUT_SWIPE,
+    // cinematic / film
+    CINEMATIC_FADE, FILM_BURN, FILM_ROLL, FILM_SHAKE, FILM_GRAIN_X, VINTAGE_FADE,
+    DUST_X, SCRATCH_X, CINEMATIC_ZOOM, CINEMATIC_WIPE, CINEMATIC_PUSH, FILM_ERASE,
+    // liquid / distortion
+    LIQUID_WIPE, LIQUID_STRETCH, RIPPLE_X, WAVE_WARP, LENS_WARP, BULGE, PINCH,
+    SWIRL, TWIST, HEAT_WAVE, ELASTIC, MELT,
+    // dynamic
+    WISP_PORTAL, PETAL_WIND, DUST_FLURRY, TWINKLE_ZOOM, COMPARISON, CHROME_WAVE,
+    BULGE_BLING, MESSY_CIRCLES, WILDFIRE_SCAN, GALLERY_SLIDE, GALLERY_ZOOM,
+    COMPRESSION_SPIN, SHAKE_SHIFT, DARK_SCALE, RANDOM_GALLERY,
+
+    // --- library aliases (v1.7): extra UI names that reuse an existing
+    //     renderer family through TransitionEngine.fillFamily*, so they never
+    //     duplicate math — they map onto a real renderer below.
+    WHIP_PAN,        // → directional whip blur motion
+    ZOOM_CAMERA,     // → zoom camera push
+    LINEAR_WIPE,     // → axis linear wipe
+    FEATHER_MASK,    // → feathered shape reveal
+    BLUR_DIRECTIONAL,// → directional motion blur
+    FAST_PUSH,       // → snappy push
+    FAST_PULL;
+
+    /** Renderers that paint a full-frame colour wash (flash/light/dip). */
+    public boolean isOverlay() {
+        switch (this) {
+            case FLASH: case WHITE_FLASH: case BLACK_FLASH: case CAMERA_FLASH:
+            case DIP_TO_WHITE: case STROBE: case SOFT_FLASH: case GLOW_FLASH:
+            case NEON_FLASH: case FILM_FLASH: case SUNSET_FLASH: case LENS_FLARE:
+            case LIGHT_LEAK: case LIGHT_SWEEP: case FLASH_WIPE: case GLARE:
+            case BLACKOUT_SWIPE: case DIP_TO_BLACK: case CINEMATIC_FADE:
+            case FILM_BURN: case VINTAGE_FADE:
+                return true;
+            default:
+                return false;
+        }
+    }
 }

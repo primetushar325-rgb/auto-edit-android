@@ -1,10 +1,13 @@
 {
-  "latestVersionCode": 16,
-  "latestVersionName": "1.6.1",
+  "latestVersionCode": 17,
+  "latestVersionName": "1.7.0",
   "minimumSupportedVersionCode": 4,
   "downloadUrl": "https://github.com/primetushar325-rgb/auto-edit-android/releases/latest/download/AutoEdit-latest.apk",
   "releaseNotes": [
-    "Fixed a crash when previewing large or 4K videos in the frame extractor",
-    "Permissions are now asked once, up front, instead of interrupting you mid-task"
+    "Brand-new CapCut-style Transition library: 240+ named transitions across 16 categories",
+    "Live looping preview cards, search, favourites and Recently Used",
+    "Real 3D perspective (cube/flip/page-turn), controllable blur, RGB-split/glitch, flash and feathered shape masks",
+    "Per-transition duration (0.2\u20132.0s), select a card then apply to one junction or every boundary",
+    "Preview and export use the exact same transition math; unknown/old projects open safely"
   ]
 }

@@ -22,6 +22,8 @@ public class TimelineClip {
     /** The junction AFTER this clip (spec §46). Never inside the clip. */
     public TransitionType transition = TransitionType.CROSS_DISSOLVE;
     public float transitionDurationSec = .5f;
+    /** CapCut library preset id (TransitionRegistry); null for legacy raw-enum transitions. */
+    public String transitionPresetId = null;
 
     /**
      * Legacy single-effect fields. Kept as real fields for compatibility and
@@ -107,6 +109,7 @@ public class TimelineClip {
         o.put("durationMs", durationMs);
         o.put("formula", formula.id);
         o.put("transition", transition.name());
+        if (transitionPresetId != null) o.put("transitionPreset", transitionPresetId);
         o.put("transitionDuration", transitionDurationSec);
         o.put("effect", effect.name());
         o.put("effectIntensity", effectIntensity);

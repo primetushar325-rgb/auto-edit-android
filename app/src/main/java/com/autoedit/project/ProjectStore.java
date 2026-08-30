@@ -80,6 +80,7 @@ public class ProjectStore {
                 else clip.setDurationSeconds((float) c.optDouble("duration", 5));
                 clip.transition = transition(c.optString("transition", TransitionType.CROSS_DISSOLVE.name()));
                 clip.transitionDurationSec = (float) c.optDouble("transitionDuration", .5);
+                String _pid = c.optString("transitionPreset", ""); if (!_pid.isEmpty() && !"null".equals(_pid)) clip.transitionPresetId = _pid;
                 clip.effect = effect(c.optString("effect", EffectType.NONE.name()));
                 clip.effectIntensity = (float) c.optDouble("effectIntensity", .6);
                 JSONArray layers = c.optJSONArray("effectLayers");
