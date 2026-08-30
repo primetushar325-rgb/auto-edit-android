@@ -6,8 +6,8 @@
   "releaseNotes": [
     "Brand-new CapCut-style Transition library: 240+ named transitions across 16 categories",
     "Live looping preview cards, search, favourites and Recently Used",
-    "Real 3D perspective (cube/flip/page-turn), controllable blur, RGB-split/glitch, flash and feathered shape masks",
-    "Per-transition duration (0.2\u20132.0s), select a card then apply to one junction or every boundary",
-    "Preview and export use the exact same transition math; unknown/old projects open safely"
+    "Real 3D perspective, controllable blur, RGB-split/glitch, flash and feathered shape masks",
+    "Per-transition duration (0.2-2.0s); select a card, then apply to one junction or every boundary",
+    "Preview and export share the exact same transition math; old projects open safely"
   ]
 }
