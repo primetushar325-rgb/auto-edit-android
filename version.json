@@ -4,11 +4,10 @@
   "minimumSupportedVersionCode": 4,
   "downloadUrl": "https://github.com/primetushar325-rgb/auto-edit-android/releases/latest/download/AutoEdit-latest.apk",
   "releaseNotes": [
-    "16 new multi-panel Gallery transitions (Motion, Wall, 3D Scroll, Align, Social, Frame, Cam, Space, Preview, Grid, Messy, Morph, Carousel, Columns) + Social & Photo categories",
-    "Layers system: image/text/logo overlays above the transition, corner presets, position/size/rotation/opacity/timing \u2014 baked into the export",
-    "4-lane timeline: ruler, clips (drag the right edge to resize 0.5s-60s), live audio waveform, overlay lanes; zoom 0.5x-4x; auto-scroll follows the playhead",
-    "Split clip or audio at the playhead with one tap",
-    "Export stability: muxer EOS state machine fixes the 100% -> failed bug",
-    "Preview and export still share the exact same engines \u2014 what you see is what you get"
+    "Brand-new CapCut-style Transition library: 240+ named transitions across 16 categories",
+    "Live looping preview cards, search, favourites and Recently Used",
+    "Real 3D perspective, controllable blur, RGB-split/glitch, flash and feathered shape masks",
+    "Per-transition duration (0.2-2.0s); select a card, then apply to one junction or every boundary",
+    "Preview and export share the exact same transition math; old projects open safely"
   ]
 }
