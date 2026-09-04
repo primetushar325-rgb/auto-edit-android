@@ -41,10 +41,18 @@ public class TimelineClip {
 
     // -------------------------------------------------------------- duration
 
+    /**
+     * Project-defined safe minimum clip duration. The timeline resize handles
+     * clamp to this, so a clip can never be dragged to zero and the timeline
+     * geometry (playhead, split, audio sync) stays stable.
+     */
+    public static final long MIN_DURATION_MS = 500L;
+    public static final long MAX_DURATION_MS = 60_000L;
+
     public void setDurationSeconds(float seconds) { setDurationMs(Math.round(seconds * 1000f)); }
 
     public void setDurationMs(long ms) {
-        long clamped = Math.max(3000L, Math.min(8000L, ms));
+        long clamped = Math.max(MIN_DURATION_MS, Math.min(MAX_DURATION_MS, ms));
         durationMs = clamped;
         durationSec = clamped / 1000f;
     }

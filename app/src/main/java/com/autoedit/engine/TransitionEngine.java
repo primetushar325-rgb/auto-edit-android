@@ -315,6 +315,17 @@ public class TransitionEngine {
             case GALLERY_SLIDE: tr.dx = -e; break;
             case GALLERY_ZOOM: case RANDOM_GALLERY: tr.scale = 1f - 0.3f * e;
                 if (t == TransitionType.RANDOM_GALLERY) jitter(tr, p, 0.03f); break;
+            // Multi-panel gallery families (v1.8): the full draw happens in
+            // TransitionDraw.drawGallery (both clip bitmaps). These in/out
+            // transforms are the safe crossfade fallback for any renderer
+            // that takes the single-transform path, so alpha stays valid.
+            case GALLERY_MOTION: case GALLERY_WALL: case GALLERY_WALL_V: case GALLERY_SCROLL_3D:
+            case GALLERY_ALIGN: case GALLERY_SOCIAL: case GALLERY_FRAME: case GALLERY_CAM:
+            case GALLERY_SPACE: case GALLERY_PREVIEW: case GALLERY_GRID: case GALLERY_MESSY:
+            case GALLERY_MORPH: case GALLERY_CAROUSEL: case GALLERY_COLUMNS:
+                tr.alpha = 1f - p;
+                tr.scale = 1f + 0.06f * p;
+                break;
             case WILDFIRE_SCAN: tr.alpha = 1f; tr.overlayColor = 0xFFFF5A2C; tr.overlayAlpha = 0.5f * bell(p); break;
             default: break;
         }
@@ -543,6 +554,13 @@ public class TransitionEngine {
             case GALLERY_SLIDE: tr.alpha = 1f; tr.dx = 1f - e; break;
             case GALLERY_ZOOM: tr.alpha = e; tr.scale = 1.3f - 0.3f * e; break;
             case RANDOM_GALLERY: tr.alpha = e; tr.scale = 1.3f - 0.3f * e; jitter(tr, p, 0.03f); break;
+            case GALLERY_MOTION: case GALLERY_WALL: case GALLERY_WALL_V: case GALLERY_SCROLL_3D:
+            case GALLERY_ALIGN: case GALLERY_SOCIAL: case GALLERY_FRAME: case GALLERY_CAM:
+            case GALLERY_SPACE: case GALLERY_PREVIEW: case GALLERY_GRID: case GALLERY_MESSY:
+            case GALLERY_MORPH: case GALLERY_CAROUSEL: case GALLERY_COLUMNS:
+                tr.alpha = p;
+                tr.scale = 1.06f - 0.06f * e;
+                break;
             case WILDFIRE_SCAN: tr.revealRadius = e; tr.wipeAxis = 0; tr.wipeSign = 1f; tr.overlayColor = 0xFFFF5A2C; tr.overlayAlpha = 0.5f * bell(p); tr.alpha = 1f; break;
             default: tr.alpha = e; break;
         }
@@ -570,7 +588,12 @@ public class TransitionEngine {
                 TransitionType.CIRCLE_REVEAL, TransitionType.CIRCLE_CLOSE,
                 TransitionType.RADIAL_REVEAL, TransitionType.SMOOTH_REVEAL,
                 TransitionType.SMOOTH_LIGHT, TransitionType.LIGHT_LEAK,
-                TransitionType.FLASH, TransitionType.WHIP
+                TransitionType.FLASH, TransitionType.WHIP,
+                TransitionType.GALLERY_MOTION, TransitionType.GALLERY_WALL, TransitionType.GALLERY_WALL_V,
+                TransitionType.GALLERY_SCROLL_3D, TransitionType.GALLERY_ALIGN, TransitionType.GALLERY_SOCIAL,
+                TransitionType.GALLERY_FRAME, TransitionType.GALLERY_CAM, TransitionType.GALLERY_SPACE,
+                TransitionType.GALLERY_PREVIEW, TransitionType.GALLERY_GRID, TransitionType.GALLERY_MESSY,
+                TransitionType.GALLERY_MORPH, TransitionType.GALLERY_CAROUSEL, TransitionType.GALLERY_COLUMNS
         };
     }
 
@@ -609,6 +632,21 @@ public class TransitionEngine {
             case WHIP: return "Whip";
             case LIGHT_LEAK: return "Light Leak";
             case SMOOTH_LIGHT: return "Smooth Light";
+            case GALLERY_MOTION: return "Motion Gallery";
+            case GALLERY_WALL: return "Wall Gallery";
+            case GALLERY_WALL_V: return "Gallery Wall";
+            case GALLERY_SCROLL_3D: return "3D Gallery Scroll";
+            case GALLERY_ALIGN: return "Gallery Alignment";
+            case GALLERY_SOCIAL: return "Social Gallery";
+            case GALLERY_FRAME: return "Gallery Frame";
+            case GALLERY_CAM: return "Cam Gallery";
+            case GALLERY_SPACE: return "Space Gallery";
+            case GALLERY_PREVIEW: return "Gallery Preview";
+            case GALLERY_GRID: return "Gallery Grid";
+            case GALLERY_MESSY: return "Messy Gallery";
+            case GALLERY_MORPH: return "Gallery Morph";
+            case GALLERY_CAROUSEL: return "Gallery Carousel";
+            case GALLERY_COLUMNS: return "Gallery Columns";
             default: return t.name();
         }
     }

@@ -25,8 +25,8 @@ public class TextOverlay {
     }
 
     public static TextOverlay fromJson(JSONObject o) {
+        if (o == null) return null;
         TextOverlay t = new TextOverlay();
-        if (o == null) return t;
         t.text = o.optString("text", t.text);
         t.startSec = (float) o.optDouble("startSec", t.startSec);
         t.endSec = (float) o.optDouble("endSec", t.endSec);

@@ -28,6 +28,14 @@ public class ProjectStore {
     }
 
     public String toJsonString(EditProject p) throws JSONException {
+        return serialize(p);
+    }
+
+    /**
+     * Pure JSON serialization (no Context) — also used by the undo/redo
+     * snapshot mechanism and by the unit tests.
+     */
+    public static String serialize(EditProject p) throws JSONException {
         JSONObject o = new JSONObject();
         o.put("name", p.name);
         o.put("fps", p.fps);
@@ -47,6 +55,10 @@ public class ProjectStore {
         for (TextOverlay t : p.texts) texts.put(t.toJson());
         o.put("texts", texts);
 
+        JSONArray overlays = new JSONArray();
+        for (OverlayLayer ovl : p.overlays) overlays.put(ovl.toJson());
+        o.put("overlays", overlays);
+
         p.migrateLegacyAudio();
         JSONArray audio = new JSONArray();
         for (AudioTrack t : p.audioTracks) audio.put(t.toJson());
@@ -55,6 +67,16 @@ public class ProjectStore {
     }
 
     public EditProject fromJsonString(String s) {
+        return deserialize(s, ctx);
+    }
+
+    /** Pure JSON deserialization (no Context) — defensive, never throws. */
+    public static EditProject deserialize(String s) {
+        return deserialize(s, null);
+    }
+
+    /** Deserialization with optional Context (needed only for custom formulas). */
+    private static EditProject deserialize(String s, Context ctx) {
         EditProject p = new EditProject();
         if (s == null) return p;
         try {
@@ -75,7 +97,7 @@ public class ProjectStore {
                 String uri = c.optString("uri", null);
                 if (uri == null || uri.isEmpty()) continue;
                 TimelineClip clip = new TimelineClip(uri, c.optInt("index", i + 1),
-                        resolveFormula(c.optString("formula", "17")));
+                        resolveFormula(c.optString("formula", "17"), ctx));
                 if (c.has("durationMs")) clip.setDurationMs(c.optLong("durationMs", 5000));
                 else clip.setDurationSeconds((float) c.optDouble("duration", 5));
                 clip.transition = transition(c.optString("transition", TransitionType.CROSS_DISSOLVE.name()));
@@ -98,8 +120,16 @@ public class ProjectStore {
             }
 
             JSONArray texts = o.optJSONArray("texts");
-            if (texts != null) for (int i = 0; i < texts.length(); i++)
-                p.texts.add(TextOverlay.fromJson(texts.optJSONObject(i)));
+            if (texts != null) for (int i = 0; i < texts.length(); i++) {
+                TextOverlay t = TextOverlay.fromJson(texts.optJSONObject(i));
+                if (t != null) p.texts.add(t);
+            }
+
+            JSONArray overlays = o.optJSONArray("overlays");
+            if (overlays != null) for (int i = 0; i < overlays.length(); i++) {
+                OverlayLayer ovl = OverlayLayer.fromJson(overlays.optJSONObject(i));
+                if (ovl != null) p.overlays.add(ovl);
+            }
 
             JSONArray audio = o.optJSONArray("audioTracks");
             if (audio != null) for (int i = 0; i < audio.length(); i++) {
@@ -123,12 +153,20 @@ public class ProjectStore {
      *  restarts; built-in ids fall back to FormulaEngine (old saves intact).
      *  Missing/deleted custom ids safely fall back to the default motion. */
     private Formula resolveFormula(String id) {
+        return resolveFormula(id, ctx);
+    }
+
+    /** Context-free variant (used by the pure static deserializer). */
+    private static Formula resolveFormula(String id, Context ctx) {
+        FormulaEngine fe = new FormulaEngine();
         if (id != null && id.startsWith("C")) {
-            Formula cf = CustomFormulaStore.resolve(ctx, id, formulas);
-            if (cf != null && cf.id != null && cf.id.equals(id)) return cf;
-            return formulas.byId("17");
+            if (ctx != null) {
+                Formula cf = CustomFormulaStore.resolve(ctx, id, fe);
+                if (cf != null && cf.id != null && cf.id.equals(id)) return cf;
+            }
+            return fe.byId("17");
         }
-        return formulas.byId(id);
+        return fe.byId(id);
     }
 
     // ------------------------------------------------------- defensive enums

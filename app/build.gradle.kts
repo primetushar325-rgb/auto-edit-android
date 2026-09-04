@@ -14,7 +14,7 @@ val hasReleaseSigning = !signingStoreFile.isNullOrBlank()
 android {
     namespace = "com.autoedit"
     compileSdk = 35
-    defaultConfig { applicationId = "com.autoedit"; minSdk = 26; targetSdk = 35; versionCode = 17; versionName = "1.7.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "com.autoedit"; minSdk = 26; targetSdk = 35; versionCode = 18; versionName = "1.8.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     signingConfigs {
         if (hasReleaseSigning) {
             create("release") {
@@ -35,6 +35,9 @@ android {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // Real JSON for the JVM unit tests (ProjectStore round-trips, etc.).
+    // Test classpath only — never shipped in the APK.
+    testImplementation("org.json:json:20240303")
     // androidx.core only for FileProvider (content:// URIs for ZIP share + APK install).
     implementation("androidx.core:core:1.13.1")
     // AdMob interstitials shown before Export (MainActivity -> AdGate).

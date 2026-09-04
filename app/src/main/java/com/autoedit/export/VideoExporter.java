@@ -139,7 +139,11 @@ public class VideoExporter {
                 Yuv420Converter.bitmapToYuv420(frame, yuv, colorFormat);
 
                 long pts = Timeline.framePtsUs(project, frameIndex);
-                queueVideoFrame(encoder, yuv, pts, frameIndex == total - 1);
+                // The EOS flag is deliberately NOT set here: it is sent exactly
+                // once by flushVideo (v1.8 muxer state machine). A double EOS
+                // (flag on the last frame AND in the flush) is what corrupted
+                // the muxer state at 100% on several devices.
+                queueVideoFrame(encoder, yuv, pts, false);
 
                 // Drain video; start the muxer as soon as BOTH formats are known.
                 while (true) {
@@ -300,7 +304,13 @@ public class VideoExporter {
 
     // -------------------------------------------------------------- encoder io
 
+    /**
+     * Queues one frame. {@code last} is kept for API symmetry but MUST stay
+     * false: the EOS flag belongs to the flush step (see {@link #flushVideo})
+     * — queueing it here would double-signal EOS and corrupt the muxer.
+     */
     private void queueVideoFrame(MediaCodec encoder, byte[] yuv, long ptsUs, boolean last) {
+        int flags = 0; // EOS never set from here (state machine owns it)
         while (true) {
             int in = encoder.dequeueInputBuffer(20_000);
             if (in >= 0) {
@@ -308,8 +318,7 @@ public class VideoExporter {
                 if (buf == null) { encoder.queueInputBuffer(in, 0, 0, ptsUs, 0); return; }
                 buf.clear();
                 buf.put(yuv);
-                encoder.queueInputBuffer(in, 0, yuv.length, ptsUs,
-                        last ? MediaCodec.BUFFER_FLAG_END_OF_STREAM : 0);
+                encoder.queueInputBuffer(in, 0, yuv.length, ptsUs, flags);
                 return;
             }
             // Encoder is full; the caller's drain loop will free a buffer.
@@ -319,16 +328,45 @@ public class VideoExporter {
         }
     }
 
+    /**
+     * v1.8 muxer state machine. The old code could (a) send TWO EOS signals
+     * (the last frame already carried the flag) and (b) spin forever in the
+     * flush loop when the codec never surfaced an EOS output buffer — that
+     * hang at 100% was the "Export failed" root cause.
+     *
+     * Now: ONE empty EOS input buffer, then a BOUNDED drain. The loop exits
+     * on the EOS flag or on hard attempt/time limits; whatever state we
+     * reach, the caller still calls {@code muxer.stop()}, which finalises the
+     * MP4 with the samples actually written (a truncated tail is far better
+     * than a corrupt container).
+     */
     private void flushVideo(MediaCodec encoder, MediaMuxer muxer, MediaCodec.BufferInfo info,
                             int videoTrack, boolean muxerStarted, RandomAccessFile audioIn,
                             AudioMixer.Result audio, int audioTrack) throws IOException {
-        int in = encoder.dequeueInputBuffer(20_000);
-        if (in >= 0) encoder.queueInputBuffer(in, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-        while (true) {
-            int o = encoder.dequeueOutputBuffer(info, 20_000);
+        // state: QUEUED_EOS -> draining -> (EOS_OBSERVED | GAVE_UP)
+        boolean eosQueued = false;
+        for (int tries = 0; tries < 32 && !eosQueued; tries++) {
+            int in = encoder.dequeueInputBuffer(100_000);
+            if (in < 0) continue;
+            encoder.queueInputBuffer(in, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+            eosQueued = true;
+            break;
+        }
+        if (!eosQueued) {
+            Log.w(TAG, "Could not queue encoder EOS within retries; finalising without it");
+        }
+        long deadline = System.nanoTime() + 15_000_000_000L; // 15s hard bound
+        boolean eosSeen = false;
+        int attempts = 0;
+        while (attempts++ < 4096) {
+            if (System.nanoTime() > deadline) {
+                Log.w(TAG, "Flush drain hit the 15s bound; stopping the muxer with what was written");
+                break;
+            }
+            int o = encoder.dequeueOutputBuffer(info, 200_000);
             if (o == MediaCodec.INFO_TRY_AGAIN_LATER) continue;
             if (o == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) continue;
-            if (o < 0) continue;
+            if (o < 0) break;
             ByteBuffer buf = encoder.getOutputBuffer(o);
             if (buf != null && muxerStarted && info.size > 0
                     && (info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
@@ -341,8 +379,9 @@ public class VideoExporter {
             }
             boolean eos = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
             encoder.releaseOutputBuffer(o, false);
-            if (eos) break;
+            if (eos) { eosSeen = true; break; }
         }
+        if (!eosSeen) Log.w(TAG, "Encoder EOS not observed in flush; container finalised as-is");
     }
 
     /**

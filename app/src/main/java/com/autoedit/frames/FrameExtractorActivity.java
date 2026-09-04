@@ -660,34 +660,35 @@ public class FrameExtractorActivity extends Activity {
 
     private void showZipReady() {
         zipInfo.setText("✅  ZIP READY\n" + zipFile.getName() + "\n" + zipFile.length() / 1024 + " KB");
-        // buttons are added once by showDone; rebuild them here is simpler:
         if (root == null) return;
-        // find & remove previous action row (id-tagged)
-        for (int i = 0; i < root.getChildCount(); i++) {
+        // Remove ALL previous action rows (tagged) — repeated calls (e.g. when
+        // the ZIP finishes a second time) must never stack duplicate rows,
+        // and a View may only have one parent, so each button is created here.
+        for (int i = root.getChildCount() - 1; i >= 0; i--) {
             View v = root.getChildAt(i);
-            if (v.getTag() != null && "zip_actions".equals(v.getTag().toString())) { root.removeView(v); break; }
+            if (v.getTag() != null && "zip_actions".equals(v.getTag().toString())) root.removeViewAt(i);
         }
         LinearLayout actions = row();
         actions.setTag("zip_actions");
-        Button save = AeDesign.button(this, "SAVE TO DEVICE", true);
+        Button save = AeDesign.button(this, "SAVE ZIP", true);
         AeDesign.press(save, this::saveZip);
-        Button gallery = AeDesign.button(this, "SAVE TO GALLERY", true);
-        AeDesign.press(gallery, this::saveFramesToGallery);
-        actions.addView(save, new LinearLayout.LayoutParams(0, dp(52), 1));
+        actions.addView(save, new LinearLayout.LayoutParams(0, dp(50), 1.2f));
         Button share = AeDesign.button(this, "SHARE ZIP", false);
         AeDesign.press(share, this::shareZip);
-        LinearLayout.LayoutParams shlp = new LinearLayout.LayoutParams(0, dp(52), 1);
+        LinearLayout.LayoutParams shlp = new LinearLayout.LayoutParams(0, dp(50), 1f);
         shlp.leftMargin = dp(6);
         actions.addView(share, shlp);
         Button open = AeDesign.button(this, "OPEN", false);
         AeDesign.press(open, this::openZip);
-        LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(0, dp(52), 1);
+        LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(0, dp(50), 1f);
         olp.leftMargin = dp(6);
         actions.addView(open, olp);
         root.addView(actions, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout galleryRow = row();
-        galleryRow.setTag("zip_actions");
-        galleryRow.addView(gallery, new LinearLayout.LayoutParams(-1, dp(52)));
+        galleryRow.setTag("zip_gallery");
+        Button gallery = AeDesign.button(this, "SAVE FRAMES TO GALLERY", false);
+        AeDesign.press(gallery, this::saveFramesToGallery);
+        galleryRow.addView(gallery, new LinearLayout.LayoutParams(-1, dp(50)));
         root.addView(galleryRow, new LinearLayout.LayoutParams(-1, -2));
     }
 

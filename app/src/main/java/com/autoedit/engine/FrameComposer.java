@@ -84,6 +84,57 @@ public class FrameComposer {
             drawTransition(project, canvas, at, mix, w, h, source, timeSec);
         }
         drawTexts(project, canvas, timeSec, w, h);
+        drawOverlays(project, canvas, timeSec, w, h, source);
+    }
+
+    // ------------------------------------------------------------- overlays
+
+    /**
+     * Overlay layers (v1.8) sit above the clip, effects, transition and the
+     * older text tracks. Drawn in list order (back to front), hidden layers
+     * skipped — preview and export share this exact method.
+     */
+    private void drawOverlays(EditProject p, Canvas canvas, float time, int w, int h,
+                              BitmapSource source) {
+        if (p == null || p.overlays == null) return;
+        for (OverlayLayer o : p.overlays) {
+            if (o == null || !o.activeAt(time, p)) continue;
+            try {
+                float cx = o.x * w, cy = o.y * h;
+                android.graphics.Paint layerPaint = new android.graphics.Paint();
+                layerPaint.setAlpha((int) (255 * clamp01(o.opacity)));
+                int saveLayer = (o.opacity < 0.995f)
+                        ? canvas.saveLayer(new android.graphics.RectF(0, 0, w, h), layerPaint)
+                        : canvas.save();
+                canvas.rotate(o.rotation, cx, cy);
+                if (o.kind == OverlayLayer.Kind.TEXT) {
+                    Paint tp = new Paint(Paint.ANTI_ALIAS_FLAG);
+                    tp.setColor(o.color);
+                    tp.setFakeBoldText(o.bold);
+                    tp.setTextSize(o.textSize * (w / 1080f) * textScale);
+                    canvas.translate(cx, cy);
+                    android.graphics.Rect bounds = new android.graphics.Rect();
+                    tp.getTextBounds(o.text, 0, o.text.length(), bounds);
+                    canvas.drawText(o.text, -bounds.width() / 2f,
+                            -((tp.descent() + tp.ascent()) / 2f), tp);
+                } else if (o.uri != null) {
+                    Bitmap b = source.get(o.uri, Math.max(1, Math.round(w * 0.45f * o.scale)), 0);
+                    if (b != null) {
+                        // keep aspect: scale 1.0 = 45% of canvas width
+                        float pw = Math.min(w * 0.45f * o.scale * 2f, b.getWidth());
+                        float ph = pw * b.getHeight() / (float) b.getWidth();
+                        canvas.drawBitmap(b,
+                                new android.graphics.Rect(0, 0, b.getWidth(), b.getHeight()),
+                                new android.graphics.RectF(cx - pw / 2f, cy - ph / 2f,
+                                        cx + pw / 2f, cy + ph / 2f),
+                                new Paint(Paint.FILTER_BITMAP_FLAG));
+                    }
+                }
+                canvas.restoreToCount(saveLayer);
+            } catch (Throwable ignored) {
+                // one bad overlay must never kill the frame
+            }
+        }
     }
 
     // ------------------------------------------------------------- transition
@@ -102,6 +153,31 @@ public class FrameComposer {
             tt = preset.type;
         }
         if (tt == TransitionType.NONE || tt == TransitionType.CUT) return;
+
+        // Multi-panel gallery families (v1.8): draw BOTH clips through the
+        // dedicated gallery renderer — the single in/out transform path below
+        // cannot express multiple panels. Same code in preview and export.
+        if (tt.isGallery()) {
+            try {
+                Bitmap outB = at.clip != null ? source.get(at.clip.uri, w, h) : null;
+                Bitmap inB = source.get(project.clips.get(at.clipIndex + 1).uri, w, h);
+                float seed = (at.clipIndex + 1) * 17.253f;
+                TransitionDraw.drawGallery(canvas, w, h, mix, tt,
+                        preset != null ? preset.direction : "",
+                        preset != null ? preset.intensity : 0.6f, outB, inB, seed);
+            } catch (Throwable bad) {
+                // renderer hiccup: fall back to a safe crossfade
+                preset = TransitionRegistry.fallback();
+                tt = preset.type;
+                TransitionEngine.Transform in = transitions.incoming(preset, mix);
+                TransitionEngine.Transform out = transitions.outgoing(preset, mix);
+                drawClipT(canvas, at.clip, at.clipIndex, at.progress, w, h, project.fitMode, source, out, timeSec);
+                TimelineClip next = project.clips.get(at.clipIndex + 1);
+                drawIncoming(canvas, next, at.clipIndex + 1, in, w, h, project.fitMode, source, timeSec);
+                return;
+            }
+            return;
+        }
 
         TransitionEngine.Transform in = preset != null ? transitions.incoming(preset, mix) : transitions.incoming(tt, mix);
         TransitionEngine.Transform out = preset != null ? transitions.outgoing(preset, mix) : transitions.outgoing(tt, mix);

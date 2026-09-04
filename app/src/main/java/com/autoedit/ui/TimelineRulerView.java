@@ -17,13 +17,15 @@ import com.autoedit.model.TimelineClip;
  *   chip gap    = GAP dp (marginStart)
  */
 public class TimelineRulerView extends View {
-    public static final float VEL_DP = 13f; // dp per second
+    public static final float VEL_DP = 13f; // dp per second at 1x zoom
     public static final float GAP_DP = 3f;  // dp gap before each chip
+    public static final float PAD_DP = 8f;  // timeline side padding (v1.8 shared geometry)
 
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint playP = new Paint(Paint.ANTI_ALIAS_FLAG);
     private EditProject project;
     private float timeSec = 0f;
+    private float zoom = 1f;
 
     public TimelineRulerView(Context c) {
         super(c);
@@ -33,11 +35,30 @@ public class TimelineRulerView extends View {
 
     public void setProject(EditProject p) { this.project = p; invalidate(); }
     public void setTime(float t) { timeSec = Math.max(0f, t); invalidate(); }
+    public void setZoom(float z) { this.zoom = Math.max(0.5f, Math.min(4f, z)); invalidate(); }
+    public float getZoom() { return zoom; }
 
+    /** Shared px-per-second geometry: 13 dp/s at 1x, zoomed (0.5x–4x). */
+    public static float pxPerSecPx(Context c, float zoom) {
+        return VEL_DP * dm(c).density * Math.max(0.5f, Math.min(4f, zoom));
+    }
+
+    private static android.util.DisplayMetrics dm(Context c) {
+        return c.getResources().getDisplayMetrics();
+    }
+
+    /** Content width for the WHOLE timeline (all lanes share it), in px. */
+    public static float contentWidthPx(Context c, EditProject p, float zoom) {
+        float pxs = pxPerSecPx(c, zoom);
+        float d = c.getResources().getDisplayMetrics().density;
+        float w = PAD_DP * d * 2;
+        if (p != null) for (TimelineClip clip : p.clips) w += clip.durationSec * pxs + GAP_DP * d;
+        return w;
+    }
+
+    /** v1.7 geometry, kept for compatibility callers. */
     public static float contentWidthPx(Context c, EditProject p) {
-        float w = 0;
-        if (p != null) for (TimelineClip clip : p.clips) w += clip.durationSec * VEL_DP + GAP_DP;
-        return AeDesign.dp(c, (int) (w + 10));
+        return contentWidthPx(c, p, 1f);
     }
 
     @Override
@@ -45,7 +66,7 @@ public class TimelineRulerView extends View {
         super.onDraw(canvas);
         int h = getHeight();
         float d = getResources().getDisplayMetrics().density;
-        float pxPerSec = VEL_DP * d;
+        float pxPerSec = VEL_DP * d * zoom;
         float gap = GAP_DP * d;
         int w = getWidth();
         float baseY = h - 8 * d;

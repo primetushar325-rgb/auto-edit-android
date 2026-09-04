@@ -58,7 +58,45 @@ public enum TransitionType {
     FEATHER_MASK,    // → feathered shape reveal
     BLUR_DIRECTIONAL,// → directional motion blur
     FAST_PUSH,       // → snappy push
-    FAST_PULL;
+    FAST_PULL,
+
+    // ===== multi-panel GALLERY families (v1.8) — rendered by
+    //     TransitionDraw.drawGallery with BOTH clip bitmaps (16 presets,
+    //     15 types: the left/right 3D-scroll pair shares one type via
+    //     the preset's direction field). 2.5D Canvas, stable on low-end.
+    GALLERY_MOTION,     // panels moving with coordinated offsets
+    GALLERY_WALL,       // tiled image wall, diagonal wave
+    GALLERY_WALL_V,     // tiled image wall, vertical wave ("Gallery Wall")
+    GALLERY_SCROLL_3D,  // perspective filmstrip scroll (real Camera 3D)
+    GALLERY_ALIGN,      // scattered panels align into a grid
+    GALLERY_SOCIAL,     // social-feed cards, staggered
+    GALLERY_FRAME,      // framed panel presentation
+    GALLERY_CAM,        // camera viewfinder (brackets + zoom settle)
+    GALLERY_SPACE,      // depth planes flying through 3D space
+    GALLERY_PREVIEW,    // editor preview-card with scrub line
+    GALLERY_GRID,       // 3×3 tile cascade
+    GALLERY_MESSY,      // controlled irregular panels
+    GALLERY_MORPH,      // quadrant matrix morph
+    GALLERY_CAROUSEL,   // 3D ring swing (real Camera perspective)
+    GALLERY_COLUMNS;    // vertical column reveal
+
+    /**
+     * Multi-panel gallery transitions (v1.8). These are rendered by
+     * {@code TransitionDraw.drawGallery} with BOTH clip bitmaps; they do not
+     * use the single-transform in/out path.
+     */
+    public boolean isGallery() {
+        switch (this) {
+            case GALLERY_MOTION: case GALLERY_WALL: case GALLERY_WALL_V:
+            case GALLERY_SCROLL_3D: case GALLERY_ALIGN: case GALLERY_SOCIAL:
+            case GALLERY_FRAME: case GALLERY_CAM: case GALLERY_SPACE:
+            case GALLERY_PREVIEW: case GALLERY_GRID: case GALLERY_MESSY:
+            case GALLERY_MORPH: case GALLERY_CAROUSEL: case GALLERY_COLUMNS:
+                return true;
+            default:
+                return false;
+        }
+    }
 
     /** Renderers that paint a full-frame colour wash (flash/light/dip). */
     public boolean isOverlay() {

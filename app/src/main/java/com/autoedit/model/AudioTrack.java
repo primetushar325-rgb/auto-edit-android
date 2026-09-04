@@ -40,6 +40,18 @@ public class AudioTrack {
 
     public AudioTrack(String uri) { this.uri = uri; }
 
+    /**
+     * How long (seconds) of the source file this track actually consumes,
+     * honouring the trims. trimEndSec &lt;= 0 means "to end of file"; an
+     * unknown source duration falls back to a 30s probe default.
+     */
+    public float effectiveDurationSec() {
+        float end = sourceDurationMs > 0 ? sourceDurationMs / 1000f : 30f;
+        float s = Math.max(0f, Math.min(trimStartSec, end));
+        float e = trimEndSec > 0 ? Math.min(trimEndSec, end) : end;
+        return Math.max(0f, e - s);
+    }
+
     /** Effective volume, 0 when muted or the URI is missing. */
     public float effectiveVolume() {
         if (muted || uri == null || uri.isEmpty()) return 0f;

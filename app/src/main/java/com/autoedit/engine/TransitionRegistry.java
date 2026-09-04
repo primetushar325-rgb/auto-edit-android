@@ -41,6 +41,9 @@ public class TransitionRegistry {
         final TransitionCategory CI = TransitionCategory.CINEMATIC;
         final TransitionCategory LQ = TransitionCategory.LIQUID;
         final TransitionCategory DY = TransitionCategory.DYNAMIC;
+        final TransitionCategory GAL = TransitionCategory.GALLERY;
+        final TransitionCategory SO = TransitionCategory.SOCIAL;
+        final TransitionCategory PH = TransitionCategory.PHOTO;
 
         // ============ BASIC ============
         reg(new TransitionPreset.B("none", "None", C, TransitionType.NONE).dur(0f,0f,0f).tags("reset","off").desc("No transition").build());
@@ -308,6 +311,35 @@ public class TransitionRegistry {
         reg(new TransitionPreset.B("fade_wipe_d", "Fade Wipe (trend)", DY, TransitionType.FADE_WIPE).dir("left").dur(.6f,.2f,2f).tags("fade","wipe").build());
         reg(new TransitionPreset.B("vertical_blur_d", "Vertical Blur (trend)", DY, TransitionType.BLUR_DIRECTIONAL).dir("down").intensity(1f).dur(.5f,.2f,1.5f).tags("vertical","blur").build());
         reg(new TransitionPreset.B("random_gallery", "Random Gallery", DY, TransitionType.RANDOM_GALLERY).dur(.5f,.2f,1.5f).tags("gallery","random","slideshow","fun").build());
+
+        // ============ GALLERY (v1.8) — 16 real multi-panel renderers ============
+        // 16 presets map onto 15 TransitionTypes: the left/right 3D-scroll
+        // pair shares GALLERY_SCROLL_3D via the preset's direction field.
+        reg(new TransitionPreset.B("gal_motion", "Motion Gallery", GAL, TransitionType.GALLERY_MOTION).dur(.8f,.35f,2f).trend().neu().tags("gallery","motion","panels","drift").desc("Panels drift into place with coordinated offsets").build());
+        reg(new TransitionPreset.B("gal_wall", "Wall Gallery", GAL, TransitionType.GALLERY_WALL).dur(.9f,.4f,2.5f).neu().tags("gallery","wall","tiles","wave").desc("Tiled image wall with a diagonal wave").build());
+        reg(new TransitionPreset.B("gal_wall_v", "Gallery Wall", GAL, TransitionType.GALLERY_WALL_V).dir("down").dur(.9f,.4f,2.5f).neu().tags("gallery","wall","vertical","tiles").desc("Tiled image wall, vertical wave").build());
+        reg(new TransitionPreset.B("gal_scroll3d", "3D Gallery Scroll", GAL, TransitionType.GALLERY_SCROLL_3D).dir("left").dur(.9f,.35f,2.5f).trend().neu().tags("3d","gallery","scroll","camera").desc("Perspective filmstrip scroll").build());
+        reg(new TransitionPreset.B("gal_scroll3d_r", "3D-Gallery Scroll", GAL, TransitionType.GALLERY_SCROLL_3D).dir("right").intensity(.8f).dur(.9f,.35f,2.5f).neu().tags("3d","gallery","scroll").desc("Perspective filmstrip scroll, right to left").build());
+        reg(new TransitionPreset.B("gal_align", "Gallery Alignment", GAL, TransitionType.GALLERY_ALIGN).dur(1f,.5f,3f).neu().tags("gallery","align","grid","scatter").desc("Scattered panels align into a grid").build());
+        reg(new TransitionPreset.B("gal_social", "Social Gallery", GAL, TransitionType.GALLERY_SOCIAL).dur(.9f,.4f,2.5f).neu().tags("social","gallery","cards","feed").desc("Social-feed cards, staggered").build());
+        reg(new TransitionPreset.B("gal_frame", "Gallery Frame", GAL, TransitionType.GALLERY_FRAME).dur(.8f,.35f,2.5f).neu().tags("gallery","frame","photo","border").desc("Framed panel presentation").build());
+        reg(new TransitionPreset.B("gal_cam", "Cam Gallery", GAL, TransitionType.GALLERY_CAM).dur(1f,.5f,3f).neu().tags("camera","gallery","viewfinder","zoom").desc("Camera viewfinder with brackets and zoom settle").build());
+        reg(new TransitionPreset.B("gal_space", "Space Gallery", GAL, TransitionType.GALLERY_SPACE).dur(1f,.5f,3f).neu().tags("space","gallery","3d","depth").desc("Depth planes flying through 3D space").build());
+        reg(new TransitionPreset.B("gal_preview", "Gallery Preview", GAL, TransitionType.GALLERY_PREVIEW).dur(.9f,.4f,2.5f).neu().tags("gallery","preview","scrub","editor").desc("Editor preview-card with scrub line").build());
+        reg(new TransitionPreset.B("gal_grid", "Gallery Grid", GAL, TransitionType.GALLERY_GRID).dur(.9f,.4f,2.5f).neu().tags("gallery","grid","tiles","cascade").desc("3×3 tile cascade").build());
+        reg(new TransitionPreset.B("gal_messy", "Messy Gallery", GAL, TransitionType.GALLERY_MESSY).dur(.8f,.35f,2.5f).neu().tags("gallery","messy","scattered","fun").desc("Controlled irregular panels").build());
+        reg(new TransitionPreset.B("gal_morph", "Gallery Morph", GAL, TransitionType.GALLERY_MORPH).dur(.8f,.35f,2.5f).trend().neu().tags("gallery","morph","quadrant","grid").desc("Quadrant matrix morph").build());
+        reg(new TransitionPreset.B("gal_carousel", "Gallery Carousel", GAL, TransitionType.GALLERY_CAROUSEL).dur(1f,.4f,3f).neu().tags("3d","gallery","carousel","ring").desc("3D ring swing with real perspective").build());
+        reg(new TransitionPreset.B("gal_columns", "Gallery Columns", GAL, TransitionType.GALLERY_COLUMNS).dur(.8f,.35f,2.5f).neu().tags("gallery","columns","vertical","reveal").desc("Vertical column reveal").build());
+
+        // ============ SOCIAL (v1.8) — real presets on existing renderers ============
+        reg(new TransitionPreset.B("stories_pop", "Stories Pop", SO, TransitionType.FAKE_ZOOM).trend().dur(.5f,.2f,1.5f).tags("social","stories","pop","reel").desc("Punchy stories-style pop").build());
+        reg(new TransitionPreset.B("feed_swipe", "Feed Swipe", SO, TransitionType.DRAG_SWITCH).dir("right").dur(.6f,.3f,2f).tags("social","feed","swipe","stories").desc("Feed-card swipe").build());
+        reg(new TransitionPreset.B("reel_zoom", "Reel Zoom", SO, TransitionType.ZOOM_SWITCH).trend().dur(.5f,.2f,1.5f).tags("social","reel","zoom","tiktok").desc("Reel-style zoom switch").build());
+
+        // ============ PHOTO (v1.8) — real presets on existing renderers ============
+        reg(new TransitionPreset.B("polaroid_pop", "Polaroid Pop", PH, TransitionType.SHAPE_REVEAL).dir("roundrect").dur(.7f,.3f,2f).tags("photo","polaroid","frame","memory").desc("Polaroid-style framed reveal").build());
+        reg(new TransitionPreset.B("album_flip", "Album Flip", PH, TransitionType.PAGE_TURN_3D).dur(.7f,.3f,2f).tags("photo","album","flip","3d","memory").desc("Photo album page turn").build());
     }
 
     public static List<TransitionPreset> all() { return ALL; }

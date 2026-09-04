@@ -35,7 +35,8 @@ import com.autoedit.update.VersionConfig;
 import com.autoedit.update.SemVer;
 
 public class MainActivity extends Activity {
-    private static final int PICK_IMAGES = 10, PICK_AUDIO = 11, REQ_CUSTOM_FORMULA = 12;
+    private static final int PICK_IMAGES = 10, PICK_AUDIO = 11, REQ_CUSTOM_FORMULA = 12,
+            PICK_OVERLAY_IMAGE = 13, PICK_LOGO = 14;
     private static final String TAG = "AutoEditMain";
 
     private EditProject project;
@@ -61,6 +62,15 @@ public class MainActivity extends Activity {
     private int batchDur = 5;
     /** Clip index whose .transition defines the junction panel scope (-1 = selected/all). */
     private int transitionScopeClip = -1;
+
+    // v1.8 timeline: 4 lanes (ruler / clips / waveform / overlays), shared geometry
+    private HorizontalScrollView timelineScroll;
+    private WaveformTrackView waveTrack;
+    private OverlayTrackView ovlTrack;
+    private float tlZoom = 1f;          // 0.5x..4x
+    private int resizing = -1;          // clip index currently edge-dragged
+    private int selectedOverlay = -1;   // overlaysPanel selection
+    private String pendingOverlayCorner = null; // corner preset awaiting a logo pick
     private final Map<String, ToolTile> tiles = new HashMap<>();
 
     // Bottom-sheet overlay (floats over the editor; never resizes the monitor)
@@ -647,19 +657,42 @@ public class MainActivity extends Activity {
         player.addView(metaLabel, new LinearLayout.LayoutParams(0, -2, 1));
         root.addView(player, new LinearLayout.LayoutParams(-1, -2));
 
-        // --- timeline: real ruler + playhead + chips (one px-per-second geometry)
+        // --- timeline: 4 lanes (ruler / clips / waveform / overlays), one px-per-second geometry
         LinearLayout tbox = AeDesign.card(this);
         tbox.setPadding(dp(8), dp(6), dp(8), dp(6));
+        LinearLayout tHead = row();
+        tHead.setGravity(Gravity.CENTER_VERTICAL);
+        tHead.addView(iconButton(R.drawable.ic_zoom_out, () -> setTlZoom(tlZoom / 1.25f)));
+        ImageView zIn = iconButton(R.drawable.ic_zoom_in, () -> setTlZoom(tlZoom * 1.25f));
+        LinearLayout.LayoutParams zilp = new LinearLayout.LayoutParams(-2, -2);
+        zilp.leftMargin = dp(4);
+        tHead.addView(zIn, zilp);
+        ImageView sp = iconButton(R.drawable.ic_split, this::splitAtPlayhead);
+        LinearLayout.LayoutParams splp = new LinearLayout.LayoutParams(-2, -2);
+        splp.leftMargin = dp(10);
+        tHead.addView(sp, splp);
+        tHead.addView(label("Split cuts the clip under the playhead into two.", 11, AeDesign.MUTED, Typeface.NORMAL),
+                new LinearLayout.LayoutParams(0, -2, 1));
+        tbox.addView(tHead, new LinearLayout.LayoutParams(-1, -2));
         ruler = new TimelineRulerView(this);
         ruler.setProject(project);
-        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        ruler.setZoom(tlZoom);
+        timelineScroll = new HorizontalScrollView(this);
         LinearLayout scrollContent = col();
-        ruler.setLayoutParams(new LinearLayout.LayoutParams((int) TimelineRulerView.contentWidthPx(this, project), dp(30)));
+        float pad0 = TimelineRulerView.PAD_DP * getResources().getDisplayMetrics().density;
+        scrollContent.setPadding((int) pad0, 0, (int) pad0, 0);
+        ruler.setLayoutParams(new LinearLayout.LayoutParams(
+                (int) (TimelineRulerView.contentWidthPx(this, project, tlZoom) - 2 * pad0), dp(34)));
         timeline = row();
+        waveTrack = new WaveformTrackView(this);
+        ovlTrack = new OverlayTrackView(this);
         scrollContent.addView(ruler);
-        scrollContent.addView(timeline);
-        hsv.addView(scrollContent);
-        tbox.addView(hsv, new LinearLayout.LayoutParams(-1, dp(118)));
+        scrollContent.addView(timeline, new LinearLayout.LayoutParams(-1, dp(78)));
+        scrollContent.addView(waveTrack, new LinearLayout.LayoutParams(-1, dp(38)));
+        scrollContent.addView(ovlTrack, new LinearLayout.LayoutParams(-1, dp(44)));
+        timelineScroll.addView(scrollContent);
+        tbox.addView(timelineScroll, new LinearLayout.LayoutParams(-1, dp(202)));
+        ovlTrack.setOnSelect(ix -> { selectedOverlay = ix; if (panelHost != null) overlaysPanel(); });
         LinearLayout tracks = col();
         project.migrateLegacyAudio();
         tracks.addView(trackLabel("Audio track",
@@ -667,6 +700,7 @@ public class MainActivity extends Activity {
                         : audioTrackSummary(project.primaryAudio()),
                 !project.audioTracks.isEmpty()));
         tracks.addView(trackLabel("Text track", project.texts.size() + " text block(s)", false));
+        tracks.addView(trackLabel("Overlay track", project.overlays.size() + " layer(s)", !project.overlays.isEmpty()));
         tbox.addView(tracks);
         root.addView(tbox, new LinearLayout.LayoutParams(-1, -2));
 
@@ -679,6 +713,7 @@ public class MainActivity extends Activity {
         addToolTile(tools, "transition", R.drawable.ic_transition, "Transition", () -> transitionPanel());
         addToolTile(tools, "duration", R.drawable.ic_timer, "Duration", () -> durationBatchPanel());
         addToolTile(tools, "text", R.drawable.ic_text, "Text", () -> textStudio());
+        addToolTile(tools, "layers", R.drawable.ic_layer, "Layers", () -> overlaysPanel());
         addToolTile(tools, "audio", R.drawable.ic_audio, "Audio", () -> audioPanel());
         addToolTile(tools, "canvas", R.drawable.ic_canvas, "Canvas", () -> canvasPanel());
         addToolTile(tools, "filters", R.drawable.ic_filters, "Filters", () -> filtersPanel());
@@ -709,7 +744,21 @@ public class MainActivity extends Activity {
         preview.onFrame = (t, idx, total) -> {
             if (playLabel != null) playLabel.setText(fmt(t) + " / " + fmt(total));
             if (ruler != null) ruler.setTime(t);
+            if (waveTrack != null) waveTrack.setPlayhead(t);
+            if (ovlTrack != null) ovlTrack.setPlayhead(t);
             if (idx != lastActiveChip) highlightPlayheadChip(idx);
+            // keep the playhead in view while playing (auto-scroll, v1.8)
+            if (preview.playing && timelineScroll != null) {
+                float d = getResources().getDisplayMetrics().density;
+                float pps = TimelineRulerView.pxPerSecPx(this, tlZoom);
+                float px = TimelineRulerView.PAD_DP * d + t * pps;
+                int vis = timelineScroll.getWidth();
+                if (vis > 0) {
+                    int sx = timelineScroll.getScrollX();
+                    if (px < sx + vis * 0.1f || px > sx + vis * 0.75f)
+                        timelineScroll.smoothScrollTo(Math.max(0, (int) (px - vis * 0.4f)), 0);
+                }
+            }
             if (audioPlayer != null && audioPlayer.isPlaying() && t < lastFrameT - 1f) {
                 try { audioPlayer.seekTo(0); } catch (Exception e) { Log.e(TAG, "Audio loop restart failed", e); }
             }
@@ -890,7 +939,34 @@ public class MainActivity extends Activity {
                     showClipPanel();
                 });
                 v.setOnLongClickListener(x -> { removeOrMoveDialog(ix); return true; });
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp((int) (c.durationSec * TimelineRulerView.VEL_DP)), dp(84));
+                // v1.8: drag the right edge to resize (clamps to the 0.5s-60s safe range)
+                v.setOnTouchListener((x, ev) -> {
+                    float vw = x.getWidth();
+                    if (ev.getAction() == MotionEvent.ACTION_DOWN) {
+                        if (ev.getX() > vw - dp(12)) {
+                            resizing = ix;
+                            pushUndo();
+                            return true;
+                        }
+                        return false;
+                    }
+                    if (resizing == ix) {
+                        if (ev.getAction() == MotionEvent.ACTION_MOVE) {
+                            float pps = TimelineRulerView.pxPerSecPx(this, tlZoom);
+                            if (pps > 0f) project.clips.get(ix).setDurationSeconds(ev.getX() / pps);
+                            applyTimelineGeometry();
+                            return true;
+                        }
+                        if (ev.getAction() == MotionEvent.ACTION_UP || ev.getAction() == MotionEvent.ACTION_CANCEL) {
+                            resizing = -1;
+                            saveProject(true);
+                            buildTimeline(false);
+                            return true;
+                        }
+                    }
+                    return false;
+                });
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp((int) (c.durationSec * TimelineRulerView.VEL_DP)), dp(78));
                 lp.leftMargin = dp((int) TimelineRulerView.GAP_DP);
                 timeline.addView(v, lp);
                 chips.add(v);
@@ -917,17 +993,21 @@ public class MainActivity extends Activity {
             TimelineClip c = project.clips.get(i);
             TextView v = chips.get(i);
             v.setText(String.format(Locale.US, "%02d\n%ds", c.index, Math.round(c.durationSec)));
-            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) v.getLayoutParams();
-            lp.width = dp((int) (c.durationSec * TimelineRulerView.VEL_DP));
-            v.requestLayout();
             styleChip(i);
         }
-        if (ruler != null) {
-            ruler.setProject(project);
-            LinearLayout.LayoutParams rlp = (LinearLayout.LayoutParams) ruler.getLayoutParams();
-            rlp.width = (int) TimelineRulerView.contentWidthPx(this, project);
-            ruler.requestLayout();
+        if (ruler != null) ruler.setProject(project);
+        if (waveTrack != null) {
+            AudioTrack at = project.primaryAudio();
+            waveTrack.setTrack(at);
+            if (at != null) {
+                WaveformCache.ensure(this, at.uri, handler, (uri, peaks) -> {
+                    AudioTrack now = project.primaryAudio();
+                    if (waveTrack != null && now != null && uri.equals(now.uri)) waveTrack.setPeaks(peaks);
+                });
+            }
         }
+        if (ovlTrack != null) ovlTrack.setProject(project);
+        applyTimelineGeometry();
         if (metaLabel != null) metaLabel.setText(project.clips.size() + " clips • " + project.fps + " FPS • " + project.fitMode.label + " • " + fmt(project.totalDurationSec()));
         if (playLabel != null) playLabel.setText(fmt(preview == null ? 0f : preview.currentTimeSec()) + " / " + fmt(project.totalDurationSec()));
         refreshJunctionIcons();
@@ -944,6 +1024,53 @@ public class MainActivity extends Activity {
             v.setColorFilter(has ? AeDesign.ACCENT : AeDesign.MUTED);
             v.setBackground(AeDesign.bg(has ? 0xff12395c : AeDesign.SURFACE, dp(14), has ? AeDesign.ACCENT : AeDesign.STROKE, has ? 2 : 1));
         }
+    }
+
+    /** One shared px-per-second for every timeline lane (v1.8). */
+    private void applyTimelineGeometry() {
+        if (ruler == null) return;
+        float d = getResources().getDisplayMetrics().density;
+        float pps = TimelineRulerView.pxPerSecPx(this, tlZoom);
+        float total = project.totalDurationSec();
+        float pad = TimelineRulerView.PAD_DP * d;
+        float laneW = TimelineRulerView.contentWidthPx(this, project, tlZoom) - 2 * pad;
+        if (laneW < dp(20)) laneW = dp(20);
+        if (ruler != null) {
+            LinearLayout.LayoutParams rlp = (LinearLayout.LayoutParams) ruler.getLayoutParams();
+            rlp.width = (int) laneW;
+            ruler.requestLayout();
+        }
+        if (waveTrack != null) waveTrack.setGeometry(pps, 0f, total);
+        if (ovlTrack != null) ovlTrack.setGeometry(pps, 0f, total);
+        for (TextView v : chips) {
+            int idx = chips.indexOf(v);
+            if (idx < 0 || idx >= project.clips.size()) continue;
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) v.getLayoutParams();
+            lp.width = Math.max(dp(28), (int) (project.clips.get(idx).durationSec * pps));
+            v.requestLayout();
+        }
+        // keep junction icons centred on the 78dp clip lane
+        for (ImageView j : junctions) {
+            LinearLayout.LayoutParams jlp = (LinearLayout.LayoutParams) j.getLayoutParams();
+            jlp.topMargin = (dp(78) - dp(28)) / 2;
+        }
+    }
+
+    private void setTlZoom(float z) {
+        tlZoom = Math.max(0.5f, Math.min(4f, z));
+        if (ruler != null) ruler.setZoom(tlZoom);
+        applyTimelineGeometry();
+    }
+
+    /** Compact 32dp icon action button (zoom, split, layer row actions). */
+    private ImageView iconButton(int icon, Runnable action) {
+        ImageView iv = new ImageView(this);
+        iv.setImageResource(icon);
+        iv.setColorFilter(AeDesign.TEXT);
+        iv.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(10), AeDesign.STROKE, 1));
+        iv.setPadding(dp(8), dp(6), dp(8), dp(6));
+        AeDesign.press(iv, action);
+        return iv;
     }
 
     private void styleChip(int i) {
@@ -1419,6 +1546,208 @@ public class MainActivity extends Activity {
         c.transitionDurationSec = dur;
     }
 
+    // ---------------------------------------------------------------- layers
+    //  v1.8 overlay layer system: images/logos/text above the transition,
+    //  drawn by the SAME FrameComposer path in preview and export.
+
+    private void overlaysPanel() {
+        openTool("layers");
+        if (panelHost == null) return;
+        panelHost.removeAllViews();
+        panelHost.addView(label("Layers / Overlays", 16, AeDesign.TEXT, Typeface.BOLD));
+
+        LinearLayout grid = rowWrap();
+        addAction(grid, "Add image overlay", this::pickOverlayImage);
+        addAction(grid, "Add text layer", this::addTextOverlayLayer);
+        panelHost.addView(grid);
+
+        LinearLayout logos = rowWrap();
+        addChoice(logos, "Logo · top-left", false, () -> addLogoOverlay("top-left"));
+        addChoice(logos, "Logo · top-right", false, () -> addLogoOverlay("top-right"));
+        addChoice(logos, "Logo · bottom-right", false, () -> addLogoOverlay("bottom-right"));
+        panelHost.addView(logos);
+
+        if (project.overlays.isEmpty()) {
+            panelHost.addView(label("No layers yet. Add an image, a text block, or a corner logo — layers sit above the transition and are baked into the export.",
+                    12, AeDesign.MUTED, Typeface.NORMAL));
+            return;
+        }
+
+        for (int i = 0; i < project.overlays.size(); i++) {
+            final int ix = i;
+            OverlayLayer o = project.overlays.get(ix);
+            boolean sel = i == selectedOverlay;
+            LinearLayout item = row();
+            item.setGravity(Gravity.CENTER_VERTICAL);
+            item.setBackground(AeDesign.bg(sel ? 0xff12395c : AeDesign.SURFACE_2, dp(12),
+                    sel ? AeDesign.ACCENT : AeDesign.STROKE, sel ? 2 : 1));
+            item.setPadding(dp(10), dp(7), dp(10), dp(7));
+            String title = (o.kind == OverlayLayer.Kind.TEXT
+                    ? (o.text == null || o.text.isEmpty() ? "text" : o.text)
+                    : (o.hidden ? "image (hidden)" : "image"));
+            item.addView(label(title.length() > 20 ? title.substring(0, 20) + "…" : title, 13, AeDesign.TEXT, Typeface.BOLD),
+                    new LinearLayout.LayoutParams(0, -2, 1));
+            item.setOnClickListener(v -> { selectedOverlay = ix; if (ovlTrack != null) ovlTrack.setSelected(ix); overlaysPanel(); });
+            LinearLayout acts = row();
+            acts.addView(iconButton(R.drawable.ic_lock, () -> {
+                pushUndo(); o.locked = !o.locked; saveProject(true); overlaysPanel();
+            }));
+            acts.addView(iconButton(R.drawable.ic_eye, () -> {
+                pushUndo(); o.hidden = !o.hidden; saveProject(true); overlaysPanel();
+            }));
+            acts.addView(iconButton(R.drawable.ic_copy, () -> {
+                pushUndo(); project.overlays.add(dupOverlay(o));
+                selectedOverlay = project.overlays.size() - 1;
+                if (ovlTrack != null) ovlTrack.setSelected(selectedOverlay);
+                saveProject(true); overlaysPanel();
+            }));
+            acts.addView(iconButton(R.drawable.ic_delete, () -> {
+                pushUndo(); project.overlays.remove(ix);
+                selectedOverlay = -1;
+                if (ovlTrack != null) ovlTrack.setSelected(-1);
+                saveProject(true); buildTimeline(false); overlaysPanel();
+            }));
+            item.addView(acts);
+            panelHost.addView(item);
+            LinearLayout.LayoutParams ilp = (LinearLayout.LayoutParams) item.getLayoutParams();
+            ilp.setMargins(0, 0, 0, dp(6));
+        }
+
+        // ---- editor for the selected layer
+        if (selectedOverlay < 0 || selectedOverlay >= project.overlays.size()) selectedOverlay = 0;
+        OverlayLayer o = project.overlays.get(selectedOverlay);
+        panelHost.addView(label("— " + (o.kind == OverlayLayer.Kind.TEXT ? "Text layer" : "Image layer") + " —", 13, AeDesign.MUTED, Typeface.BOLD));
+
+        if (o.kind == OverlayLayer.Kind.TEXT) {
+            EditText et = new EditText(this);
+            et.setText(o.text);
+            et.setHint("Layer text");
+            et.setTextColor(AeDesign.TEXT);
+            et.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(10), AeDesign.STROKE, 1));
+            et.setPadding(dp(10), dp(8), dp(10), dp(8));
+            et.setOnEditorActionListener((v, id, ev) -> {
+                String txt = et.getText().toString();
+                if (txt != null && !txt.isEmpty() && !txt.equals(o.text)) {
+                    pushUndo(); o.text = txt; saveProject(true);
+                }
+                return true;
+            });
+            panelHost.addView(et, new LinearLayout.LayoutParams(-1, -2));
+            int[] colors = {0xFFFFFFFF, 0xFFFFD54A, 0xFF40C4FF, 0xFFFF4FA3, 0xFF69F0AE};
+            LinearLayout cols = rowWrap();
+            for (int cc : colors) {
+                final int c2 = cc;
+                View dot = new View(this);
+                dot.setBackground(AeDesign.bg(c2, dp(12), o.color == c2 ? AeDesign.ACCENT : AeDesign.STROKE, o.color == c2 ? 3 : 1));
+                LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(dp(30), dp(30));
+                dlp.setMargins(dp(4), dp(4), dp(4), dp(4));
+                dot.setOnClickListener(v -> { pushUndo(); o.color = c2; saveProject(true); overlaysPanel(); });
+                cols.addView(dot, dlp);
+            }
+            panelHost.addView(cols);
+        }
+
+        panelHost.addView(label("Corner preset", 13, AeDesign.TEXT, Typeface.BOLD));
+        LinearLayout corners = rowWrap();
+        String[][] presets = {{"TL", "top-left"}, {"TR", "top-right"}, {"BL", "bottom-left"},
+                {"BR", "bottom-right"}, {"Center", "center"}, {"Free", ""}};
+        for (String[] pn : presets) {
+            final String cn = pn[1];
+            boolean cur = cn.isEmpty() ? o.corner.isEmpty() : o.corner.equals(cn);
+            addChoice(corners, cur ? "✓ " + pn[0] : pn[0], cur, () -> {
+                pushUndo(); o.applyCornerPreset(cn, o.cornerMargin);
+                saveProject(true); overlaysPanel();
+            });
+        }
+        panelHost.addView(corners);
+
+        float total = Math.max(1f, project.totalDurationSec());
+        panelHost.addView(label("X  " + Math.round(o.x * 100) + "%", 13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(0, 100, Math.round(o.x * 100), v -> {
+            pushUndo(); o.x = v / 100f; o.corner = ""; saveProject(true); overlaysPanel();
+        }));
+        panelHost.addView(label("Y  " + Math.round(o.y * 100) + "%", 13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(0, 100, Math.round(o.y * 100), v -> {
+            pushUndo(); o.y = v / 100f; o.corner = ""; saveProject(true); overlaysPanel();
+        }));
+        panelHost.addView(label("Size  " + Math.round(o.scale * 100) + "%", 13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(10, 300, Math.round(o.scale * 100), v -> {
+            pushUndo(); o.scale = v / 100f; saveProject(true); overlaysPanel();
+        }));
+        panelHost.addView(label("Rotation  " + Math.round(o.rotation) + "°", 13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(-180, 180, Math.round(o.rotation), v -> {
+            pushUndo(); o.rotation = v; saveProject(true); overlaysPanel();
+        }));
+        panelHost.addView(label("Opacity  " + Math.round(o.opacity * 100) + "%", 13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(0, 100, Math.round(o.opacity * 100), v -> {
+            pushUndo(); o.opacity = v / 100f; saveProject(true); overlaysPanel();
+        }));
+        panelHost.addView(label("Start  " + fmt(o.startSec), 13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(0, Math.max(1, Math.round(total)), Math.round(o.startSec), v -> {
+            pushUndo(); o.startSec = v;
+            if (o.endSec >= 0f && o.endSec < o.startSec + 0.5f) o.endSec = -1f;
+            saveProject(true); buildTimeline(false); overlaysPanel();
+        }));
+        panelHost.addView(label("End  " + (o.endSec < 0f ? "until end" : fmt(o.endSec)), 13, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(slider(0, Math.max(1, Math.round(total)),
+                Math.round(Math.max(o.startSec, o.endSec < 0f ? total : o.endSec)), v -> {
+            pushUndo(); o.endSec = v; saveProject(true); buildTimeline(false); overlaysPanel();
+        }));
+
+        panelHost.addView(label("Layers render above the transition in preview AND in the exported MP4.",
+                12, AeDesign.MUTED, Typeface.NORMAL));
+    }
+
+    private OverlayLayer dupOverlay(OverlayLayer o) {
+        OverlayLayer n = new OverlayLayer();
+        n.kind = o.kind;
+        n.uri = o.uri;
+        n.text = o.text;
+        n.color = o.color;
+        n.bold = o.bold;
+        n.textSize = o.textSize;
+        n.x = o.x; n.y = o.y; n.scale = o.scale; n.rotation = o.rotation; n.opacity = o.opacity;
+        n.startSec = o.startSec; n.endSec = o.endSec;
+        n.corner = o.corner; n.cornerMargin = o.cornerMargin;
+        return n;
+    }
+
+    private void addTextOverlayLayer() {
+        pushUndo();
+        OverlayLayer o = new OverlayLayer();
+        o.kind = OverlayLayer.Kind.TEXT;
+        o.text = "Text";
+        o.color = 0xffffffff;
+        o.bold = true;
+        o.textSize = 72f;
+        o.x = 0.5f; o.y = 0.35f;
+        project.overlays.add(o);
+        selectedOverlay = project.overlays.size() - 1;
+        if (ovlTrack != null) ovlTrack.setSelected(selectedOverlay);
+        saveProject(true);
+        buildTimeline(false);
+        overlaysPanel();
+        toast("Text layer added");
+    }
+
+    private void pickOverlayImage() {
+        try {
+            Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("image/*");
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(Intent.createChooser(i, "Choose an image overlay"), PICK_OVERLAY_IMAGE);
+        } catch (Exception e) {
+            toast("Could not open the image picker");
+        }
+    }
+
+    /** Picks a corner logo; the corner preset is applied when the image comes back. */
+    private void addLogoOverlay(String corner) {
+        pendingOverlayCorner = corner;
+        pickOverlayImage();
+    }
+
     private void textStudio() {
         openTool("text");
         showPanel("Text (shown in preview + export)",
@@ -1442,6 +1771,7 @@ public class MainActivity extends Activity {
         addAction(grid, project.audioTracks.isEmpty() ? "Import audio" : "Change audio", this::pickAudio);
         if (!project.audioTracks.isEmpty()) {
             addAction(grid, "Preview", this::previewAudioNow);
+            addAction(grid, "Split at playhead", this::splitAudioAtPlayhead);
             addAction(grid, "Remove audio", () -> {
                 pushUndo(); project.audioTracks.clear(); project.audioUri = null;
                 releaseAudio(); saveProject(true); showEditor();
@@ -1500,6 +1830,76 @@ public class MainActivity extends Activity {
 
         panelHost.addView(label("Plays in sync with the preview timeline and is encoded into the "
                 + "exported MP4 as a real AAC track.", 12, AeDesign.MUTED, Typeface.NORMAL));
+    }
+
+    /**
+     * Splits the clip under the playhead into two adjacent clips (v1.8).
+     * The junction is a clean cut (no transition); both halves must be at
+     * least 0.6s so the timeline geometry stays stable.
+     */
+    private void splitAtPlayhead() {
+        if (preview == null || project.clips.isEmpty()) { toast("Import images first"); return; }
+        float t = preview.currentTimeSec();
+        Timeline.Point at = Timeline.resolve(project, t);
+        TimelineClip c = at.clip;
+        if (c == null) return;
+        if (at.localSec < 0.6f || c.durationSec - at.localSec < 0.6f) {
+            toast("Move the playhead at least 0.6s inside the clip");
+            return;
+        }
+        float oldDur = c.durationSec;
+        pushUndo();
+        c.transition = TransitionType.NONE;
+        c.transitionDurationSec = 0f;
+        c.transitionPresetId = null;
+        c.setDurationSeconds(at.localSec);
+        TimelineClip right = new TimelineClip(c.uri, c.index + 1, c.formula);
+        right.setDurationSeconds(oldDur - at.localSec);
+        right.effect = c.effect;
+        right.effectIntensity = c.effectIntensity;
+        for (EffectLayer l : c.effectLayers) right.effectLayers.add(new EffectLayer(l.type, l.intensity));
+        project.clips.add(at.clipIndex + 1, right);
+        project.renumber();
+        saveProject(true);
+        buildTimeline(false);
+        toast("Clip split into two");
+    }
+
+    /**
+     * Splits the primary audio track at the playhead (v1.8): the head track
+     * is trimmed at the cut and the tail becomes a NEW track starting there,
+     * so both halves keep covering the full used region.
+     */
+    private void splitAudioAtPlayhead() {
+        AudioTrack t = project.primaryAudio();
+        if (t == null) { toast("Import audio first"); return; }
+        float play = preview == null ? 0f : preview.currentTimeSec();
+        float local = play - t.startSec;
+        float len = t.effectiveDurationSec();
+        if (local < 0.1f || local > len - 0.1f) {
+            toast("Put the playhead inside the audio");
+            return;
+        }
+        pushUndo();
+        AudioTrack b = new AudioTrack(t.uri);
+        b.sourceDurationMs = t.sourceDurationMs;
+        b.startSec = t.startSec + local;
+        b.trimStartSec = t.trimStartSec + local;
+        b.trimEndSec = t.trimEndSec;
+        b.loop = false;
+        b.fadeInSec = 0f;
+        b.fadeOutSec = t.fadeOutSec;
+        b.volume = t.volume;
+        b.muted = t.muted;
+        t.trimEndSec = t.trimStartSec + local;
+        t.loop = false;
+        t.fadeOutSec = 0f;
+        int ix = project.audioTracks.indexOf(t);
+        project.audioTracks.add(Math.max(0, ix) + 1, b);
+        saveProject(true);
+        buildTimeline(false);
+        audioPanel();
+        toast("Audio split at playhead");
     }
 
     /** Length of the loaded audio file in seconds, probed once and cached. */
@@ -2027,6 +2427,25 @@ public class MainActivity extends Activity {
             saveProject(true);
             showEditor();
             toast("Imported " + (project.clips.size() - before) + " image(s)");
+        }
+        if (req == PICK_OVERLAY_IMAGE && data.getData() != null) {
+            Uri u = data.getData();
+            try { getContentResolver().takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) {}
+            String corner = pendingOverlayCorner;
+            pendingOverlayCorner = null;
+            pushUndo();
+            OverlayLayer o = new OverlayLayer();
+            o.kind = OverlayLayer.Kind.IMAGE;
+            o.uri = u.toString();
+            if (corner != null && !corner.isEmpty()) o.applyCornerPreset(corner, 0.06f);
+            else { o.x = 0.5f; o.y = 0.5f; }
+            project.overlays.add(o);
+            selectedOverlay = project.overlays.size() - 1;
+            if (ovlTrack != null) ovlTrack.setSelected(selectedOverlay);
+            saveProject(true);
+            if ("editor".equals(screen)) showEditor();
+            toast(corner != null ? "Logo added" : "Layer added");
+            return;
         }
         if (req == PICK_AUDIO && data.getData() != null) {
             pushUndo();

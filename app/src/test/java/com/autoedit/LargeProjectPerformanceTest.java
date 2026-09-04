@@ -89,12 +89,15 @@ public class LargeProjectPerformanceTest {
         assertEquals(900L, p.totalFrames(), 0.01f);
     }
 
-    @Test public void durationClampsTo3Through8Seconds() {
+    @Test public void durationClampsToSafeRange() {
+        // v1.8: timeline resize handles need the 0.5s-60s project-safe range
         TimelineClip c = new TimelineClip("x", 1, null);
-        c.setDurationMs(1000L);
-        assertEquals(3000L, c.durationMs);
+        c.setDurationMs(100L);
+        assertEquals(TimelineClip.MIN_DURATION_MS, c.durationMs);
         c.setDurationMs(99999L);
-        assertEquals(8000L, c.durationMs);
+        assertEquals(TimelineClip.MAX_DURATION_MS, c.durationMs);
+        c.setDurationMs(1000L);
+        assertEquals(1000L, c.durationMs); // inside the safe range: untouched
         c.setDurationMs(5000L);
         assertEquals(5000L, c.durationMs);
         assertEquals(5f, c.durationSec, 0.0001f);

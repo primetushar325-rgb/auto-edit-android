@@ -20,6 +20,12 @@ public class EditProject {
     public String name = "Untitled Auto Edit";
     public ArrayList<TimelineClip> clips = new ArrayList<>();
     public ArrayList<TextOverlay> texts = new ArrayList<>();
+    /**
+     * Independent overlay layers (v1.8): images/logos/text drawn ABOVE the
+     * transition. Rendered by FrameComposer after the text tracks, in list
+     * order (back to front).
+     */
+    public ArrayList<OverlayLayer> overlays = new ArrayList<>();
     /** Real audio tracks (spec §20). Ordered back-to-front for mixing. */
     public ArrayList<AudioTrack> audioTracks = new ArrayList<>();
     /**

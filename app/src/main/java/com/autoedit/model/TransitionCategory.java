@@ -17,7 +17,10 @@ public enum TransitionCategory {
     SLIDE("Slide"),
     CINEMATIC("Cinematic"),
     LIQUID("Liquid"),
-    DYNAMIC("Dynamic");
+    DYNAMIC("Dynamic"),
+    GALLERY("Gallery"),
+    SOCIAL("Social"),
+    PHOTO("Photo");
 
     public final String label;
     TransitionCategory(String label) { this.label = label; }
