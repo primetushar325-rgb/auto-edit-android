@@ -26,7 +26,26 @@ public class MonitorLayout extends FrameLayout {
     @Override
     protected void onMeasure(int widthSpec, int heightSpec) {
         int w = MeasureSpec.getSize(widthSpec);
+        int modeH = MeasureSpec.getMode(heightSpec);
         int h = MeasureSpec.getSize(heightSpec);
+        // Inside a vertical NestedScrollView height is UNSPECIFIED — size child
+        // from width and ratio so preview remains large and ratio-correct instead
+        // of collapsing to 1px.
+        if (modeH == MeasureSpec.UNSPECIFIED) {
+            int maxW = Math.max(1, w - pad * 2);
+            int cw = maxW;
+            int ch = (int) (cw / ratio);
+            // cap insanely tall 9:16 previews on narrow phones so timeline stays visible
+            int maxCH = (int) (maxW * 1.35f);
+            if (ch > maxCH) { ch = maxCH; cw = (int) (ch * ratio); }
+            View child = getChildCount() > 0 ? getChildAt(0) : null;
+            if (child != null) {
+                child.measure(MeasureSpec.makeMeasureSpec(cw, MeasureSpec.EXACTLY),
+                        MeasureSpec.makeMeasureSpec(ch, MeasureSpec.EXACTLY));
+            }
+            setMeasuredDimension(w, ch + pad * 2);
+            return;
+        }
         int maxW = Math.max(1, w - pad * 2);
         int maxH = Math.max(1, h - pad * 2);
         int cw = Math.min(maxW, (int) (maxH * ratio));

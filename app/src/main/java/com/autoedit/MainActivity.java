@@ -718,15 +718,20 @@ public class MainActivity extends Activity {
         header.addView(export, new LinearLayout.LayoutParams(-2, dp(44)));
         root.addView(header);
 
-        // --- monitor: aspect-correct centered preview (single source of truth)
+        // --- monitor: dedicated large preview surface (BUGFIX: was collapsible / tiny)
+        // Uses FrameComposer directly (preview == export) and respects canvas ratio
+        // via MonitorLayout. Height is fixed from ratio & screen width so inside
+        // vertical scroll it stays large and ratio-correct (not UNSPECIFIED-collapsed).
         monitor = new MonitorLayout(this);
         monitor.setPadding(dp(8), dp(8), dp(8), dp(8));
         monitor.setBackground(AeDesign.bg(0xff03070d, dp(22), 0x22334a68, 1));
-        monitor.setRatio(project.width / (float) Math.max(1, project.height));
+        float ratio = project.width / (float) Math.max(1, project.height);
+        monitor.setRatio(ratio);
         preview = new PreviewView(this);
         preview.project = project;
         monitor.addView(preview, new MonitorLayout.LayoutParams(-1, -1));
-        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(-1, 0, 1);
+        int monH = calcMonitorHeight(ratio);
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(-1, monH);
         mlp.setMargins(0, dp(10), 0, dp(8));
         root.addView(monitor, mlp);
 
@@ -739,10 +744,29 @@ public class MainActivity extends Activity {
         playLabel = label("00:00 / " + fmt(project.totalDurationSec()), 16, AeDesign.TEXT, Typeface.BOLD);
         playLabel.setPadding(dp(12), 0, 0, 0);
         player.addView(playLabel);
-        metaLabel = label(project.clips.size() + " clips • " + project.fps + " FPS • " + project.fitMode.label, 12, AeDesign.MUTED, Typeface.NORMAL);
+        metaLabel = label(project.clips.size() + " clips \u2022 " + project.fps + " FPS \u2022 " + project.fitMode.label, 12, AeDesign.MUTED, Typeface.NORMAL);
         metaLabel.setPadding(dp(10), 0, 0, 0);
         player.addView(metaLabel, new LinearLayout.LayoutParams(0, -2, 1));
         root.addView(player, new LinearLayout.LayoutParams(-1, -2));
+
+        // --- outer vertical scroll: timeline + tools + clip/adjust panels
+        // BUGFIX root-cause: root LinearLayout was non-scrollable; only an inner
+        // ScrollView around panelHost scrolled, so timeline/tools stayed fixed and
+        // Duration/Clip settings below toolbar were unreachable on small screens.
+        // Fix: entire lower editor (timeline, tools, panels) lives in ONE
+        // NestedScrollView. Horizontal timeline gestures are isolated via
+        // requestDisallowInterceptTouchEvent so they never trigger vertical scroll.
+        androidx.core.widget.NestedScrollView outerScroll = new androidx.core.widget.NestedScrollView(this);
+        outerScroll.setFillViewport(true);
+        outerScroll.setVerticalScrollBarEnabled(false);
+        outerScroll.setClipToPadding(false);
+        outerScroll.setPadding(0, 0, 0, dp(12));
+        LinearLayout scrollContent = col();
+        // bottom inset already on root, but add extra breathing room so last
+        // panel card is not hidden behind gesture navigation
+        scrollContent.setPadding(0, 0, 0, dp(8));
+        outerScroll.addView(scrollContent, new FrameLayout.LayoutParams(-1, -2));
+        root.addView(outerScroll, new LinearLayout.LayoutParams(-1, 0, 1));
 
         // --- timeline: 4 lanes (ruler / clips / waveform / overlays), one px-per-second geometry
         LinearLayout tbox = AeDesign.card(this);
@@ -784,26 +808,33 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams splp = new LinearLayout.LayoutParams(-2, -2);
         splp.leftMargin = dp(10);
         tHead.addView(sp, splp);
-        tHead.addView(label("Split • Select All • Clear", 11, AeDesign.MUTED, Typeface.NORMAL),
+        tHead.addView(label("Split \u2022 Select All \u2022 Clear", 11, AeDesign.MUTED, Typeface.NORMAL),
                 new LinearLayout.LayoutParams(0, -2, 1));
         tbox.addView(tHead, new LinearLayout.LayoutParams(-1, -2));
         ruler = new TimelineRulerView(this);
         ruler.setProject(project);
         ruler.setZoom(tlZoom);
         timelineScroll = new HorizontalScrollView(this);
-        LinearLayout scrollContent = col();
+        timelineScroll.setHorizontalScrollBarEnabled(false);
+        // isolate horizontal timeline drag from outer vertical NestedScrollView
+        timelineScroll.setOnTouchListener((v, ev) -> {
+            if (ev.getAction() == MotionEvent.ACTION_DOWN) outerScroll.requestDisallowInterceptTouchEvent(true);
+            if (ev.getAction() == MotionEvent.ACTION_UP || ev.getAction() == MotionEvent.ACTION_CANCEL) outerScroll.requestDisallowInterceptTouchEvent(false);
+            return false;
+        });
+        LinearLayout scrollContentTimeline = col();
         float pad0 = TimelineRulerView.PAD_DP * getResources().getDisplayMetrics().density;
-        scrollContent.setPadding((int) pad0, 0, (int) pad0, 0);
+        scrollContentTimeline.setPadding((int) pad0, 0, (int) pad0, 0);
         ruler.setLayoutParams(new LinearLayout.LayoutParams(
                 (int) (TimelineRulerView.contentWidthPx(this, project, tlZoom) - 2 * pad0), dp(34)));
         timeline = row();
         waveTrack = new WaveformTrackView(this);
         ovlTrack = new OverlayTrackView(this);
-        scrollContent.addView(ruler);
-        scrollContent.addView(timeline, new LinearLayout.LayoutParams(-1, dp(78)));
-        scrollContent.addView(waveTrack, new LinearLayout.LayoutParams(-1, dp(38)));
-        scrollContent.addView(ovlTrack, new LinearLayout.LayoutParams(-1, dp(44)));
-        timelineScroll.addView(scrollContent);
+        scrollContentTimeline.addView(ruler);
+        scrollContentTimeline.addView(timeline, new LinearLayout.LayoutParams(-1, dp(78)));
+        scrollContentTimeline.addView(waveTrack, new LinearLayout.LayoutParams(-1, dp(38)));
+        scrollContentTimeline.addView(ovlTrack, new LinearLayout.LayoutParams(-1, dp(44)));
+        timelineScroll.addView(scrollContentTimeline);
         tbox.addView(timelineScroll, new LinearLayout.LayoutParams(-1, dp(202)));
         // Virtual timeline: recycle chips on scroll for 500–1000 clips (keeps 80 views, not 1000)
         if (Build.VERSION.SDK_INT >= 23) {
@@ -821,7 +852,7 @@ public class MainActivity extends Activity {
         tracks.addView(trackLabel("Text track", project.texts.size() + " text block(s)", false));
         tracks.addView(trackLabel("Overlay track", project.overlays.size() + " layer(s)", !project.overlays.isEmpty()));
         tbox.addView(tracks);
-        root.addView(tbox, new LinearLayout.LayoutParams(-1, -2));
+        scrollContent.addView(tbox, new LinearLayout.LayoutParams(-1, -2));
 
         // --- tools: compact icon toolbar (every tool is real; no fakes)
         GridLayout tools = new GridLayout(this);
@@ -841,15 +872,18 @@ public class MainActivity extends Activity {
         addToolTile(tools, "autoedit", R.drawable.ic_autoedit, "Auto Edit", () -> autoEditPanel());
         HorizontalScrollView toolsScroll = new HorizontalScrollView(this);
         toolsScroll.setHorizontalScrollBarEnabled(false);
+        toolsScroll.setOnTouchListener((v, ev) -> {
+            if (ev.getAction() == MotionEvent.ACTION_DOWN) outerScroll.requestDisallowInterceptTouchEvent(true);
+            if (ev.getAction() == MotionEvent.ACTION_UP || ev.getAction() == MotionEvent.ACTION_CANCEL) outerScroll.requestDisallowInterceptTouchEvent(false);
+            return false;
+        });
         toolsScroll.addView(tools, new FrameLayout.LayoutParams(-2, -2));
-        root.addView(toolsScroll, new LinearLayout.LayoutParams(-1, -2));
+        scrollContent.addView(toolsScroll, new LinearLayout.LayoutParams(-1, -2));
 
-        // --- panel host
-        ScrollView ps = new ScrollView(this);
-        ps.setFillViewport(false);
+        // --- panel host (no inner ScrollView — outer NestedScrollView owns vertical scroll)
         panelHost = col();
-        ps.addView(panelHost);
-        root.addView(ps, new LinearLayout.LayoutParams(-1, -2));
+        panelHost.setPadding(0, dp(4), 0, dp(16));
+        scrollContent.addView(panelHost, new LinearLayout.LayoutParams(-1, -2));
 
         buildTimeline(true);
         showClipPanel();
@@ -2805,7 +2839,12 @@ public class MainActivity extends Activity {
     }
 
     private void refreshAfterCanvasChange() {
-        if (monitor != null) monitor.setRatio(project.width / (float) Math.max(1, project.height));
+        if (monitor != null) {
+            float r = project.width / (float) Math.max(1, project.height);
+            monitor.setRatio(r);
+            android.view.ViewGroup.LayoutParams lp = monitor.getLayoutParams();
+            if (lp != null) { lp.height = calcMonitorHeight(r); monitor.setLayoutParams(lp); }
+        }
         if (metaLabel != null) metaLabel.setText(project.clips.size() + " clips • " + project.fps + " FPS • " + project.fitMode.label);
         if (preview != null) preview.invalidate();
     }
@@ -3999,5 +4038,11 @@ public class MainActivity extends Activity {
 
     private String fmt(float sec) { int s = Math.round(sec); return String.format(Locale.US, "%02d:%02d", s / 60, s % 60); }
     private int dp(int v) { return AeDesign.dp(this, v); }
+    private int calcMonitorHeight(float ratio) {
+        int screenW = getResources().getDisplayMetrics().widthPixels;
+        int availW = Math.max(dp(100), screenW - dp(32));
+        int h = (int) (availW / Math.max(0.3f, Math.min(3f, ratio)));
+        return Math.max(dp(180), Math.min(dp(360), h));
+    }
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
 }
