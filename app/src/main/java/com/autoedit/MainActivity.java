@@ -2536,6 +2536,33 @@ public class MainActivity extends Activity {
             lp.setMargins(dp(4), dp(4), dp(4), dp(6));
             row.addView(card, lp);
         }
+        // ── Frame & Border entry (spec: Effects → Frame & Border) ──
+        LinearLayout frameEntry = AeDesign.card(this);
+        frameEntry.setPadding(dp(12), dp(12), dp(12), dp(12));
+        LinearLayout fr = row();
+        fr.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView ficon = new ImageView(this);
+        ficon.setImageResource(R.drawable.ic_frame);
+        ficon.setColorFilter(AeDesign.ACCENT);
+        ficon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        fr.addView(ficon, new LinearLayout.LayoutParams(dp(36), dp(36)));
+        LinearLayout finfo = col();
+        finfo.addView(label("Frame & Border  —  39 animated borders", 14, AeDesign.TEXT, Typeface.BOLD));
+        finfo.addView(label("Neon Flow + 38 more • Tap to open border library", 12, AeDesign.MUTED, Typeface.NORMAL));
+        fr.addView(finfo, new LinearLayout.LayoutParams(0, -2, 1));
+        ImageView arrow = new ImageView(this);
+        arrow.setImageResource(R.drawable.ic_back);
+        arrow.setRotation(180);
+        arrow.setColorFilter(AeDesign.MUTED);
+        fr.addView(arrow, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        frameEntry.addView(fr);
+        AeDesign.press(frameEntry, () -> {
+            if (sheet != null) sheet.dismiss();
+            activeToolTag = "frame";
+            for (java.util.Map.Entry<String, ToolTile> e : tiles.entrySet()) e.getValue().setActive(e.getKey().equals("frame"));
+            framePanel();
+        });
+        s.content().addView(frameEntry, new LinearLayout.LayoutParams(-1, -2));
         sheetHint(s, "Tap a card to SELECT, then APPLY. Every effect has a real rendering path shared by preview and export.");
         addApplyButtons(s, "APPLY EFFECT TO",
                 () -> { if (selectedEffect != null) { applyEffectTo(selected, selectedEffect); afterApply("Effect applied to clip"); } },
