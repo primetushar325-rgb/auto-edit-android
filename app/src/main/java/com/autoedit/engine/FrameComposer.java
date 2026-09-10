@@ -83,6 +83,8 @@ public class FrameComposer {
             float mix = Math.min(1f, (at.localSec - (at.clip.durationSec - td)) / td);
             drawTransition(project, canvas, at, mix, w, h, source, timeSec);
         }
+        // ── MASTER BORDER / FRAME (canvas-aligned, after effects/transition, before text/overlay) ──
+        drawBorder(project, canvas, w, h, timeSec, at);
         drawTexts(project, canvas, timeSec, w, h);
         drawOverlays(project, canvas, timeSec, w, h, source);
     }
@@ -448,6 +450,33 @@ public class FrameComposer {
             canvas.drawText(o.text, o.x * w, o.y * h, textPaint);
         }
         textPaint.setFakeBoldText(false);
+    }
+
+    // ------------------------------------------------------------- border/frame
+    private void drawBorder(EditProject project, Canvas canvas, int w, int h, float timeSec, Timeline.Point at) {
+        try {
+            if (at == null || at.clip == null || at.clip.borderEffect == null) return;
+            BorderEffectConfig cfg = at.clip.borderEffect;
+            // active at localSec? BorderRenderer will double-check, but also guard here
+            if (!cfg.isActiveAt(at.localSec, at.clip.durationSec)) return;
+            BorderRenderer.draw(canvas, w, h, timeSec, cfg, at.localSec, at.clip.durationSec);
+        } catch (Throwable ignored) {}
+        // incoming border during second half of transition (crossfade)
+        try {
+            float td = transitionDurationFor(at.clip, at.clipIndex);
+            if (td > 0f && at.clipIndex + 1 < project.clips.size() && at.localSec > at.clip.durationSec - td) {
+                float mix = Math.min(1f, (at.localSec - (at.clip.durationSec - td)) / td);
+                if (mix > 0.5f) {
+                    TimelineClip next = project.clips.get(at.clipIndex + 1);
+                    if (next != null && next.borderEffect != null && next.borderEffect.isActiveAt(0f, next.durationSec)) {
+                        BorderEffectConfig tmp = next.borderEffect.copy();
+                        float fade = (mix - 0.5f) * 2f;
+                        tmp.opacity = BorderEffectConfig.clamp01(tmp.opacity * fade);
+                        BorderRenderer.draw(canvas, w, h, timeSec, tmp, 0f, next.durationSec);
+                    }
+                }
+            }
+        } catch (Throwable ignored2) {}
     }
 
     // -------------------------------------------------------------- junctions

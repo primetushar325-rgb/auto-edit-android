@@ -42,6 +42,9 @@ public class PreviewView extends View {
      *  correctly on the (usually smaller) preview canvas. */
     private float textScale = 1f;
 
+    /** Temp border for live preview before Apply (spec: 2-3s loop, Cancel/Apply). Canvas-aligned overlay. */
+    private BorderEffectConfig tempBorder = null;
+
     public interface OnFrame { void onTime(float timeSec, int activeClip, float totalSec); }
     public OnFrame onFrame;
 
@@ -81,6 +84,10 @@ public class PreviewView extends View {
         textScale = Math.max(0.2f, Math.min(4f, vh / (float) exportH));
     }
 
+    public void setTempBorder(BorderEffectConfig cfg){ tempBorder = cfg==null?null:cfg.copy(); invalidate(); }
+    public BorderEffectConfig getTempBorder(){ return tempBorder; }
+    public void clearTempBorder(){ tempBorder=null; invalidate(); }
+
     private int viewW() { return Math.max(1, getWidth()); }
     private int viewH() { return Math.max(1, getHeight()); }
 
@@ -110,10 +117,17 @@ public class PreviewView extends View {
             drawErrorState(canvas);
             debugErrorToast(active);
         }
+        // ── temp border overlay (preview before Apply) — animated even when paused
+        if (tempBorder != null && tempBorder.presetId != null) {
+            try {
+                float animT = playing ? t : (System.currentTimeMillis() % 100000L)/1000f;
+                BorderRenderer.draw(canvas, viewW(), viewH(), animT, tempBorder, 0f, 999f);
+            } catch (Throwable ignored) {}
+        }
         drawHud(canvas, t, active, total);
 
         if (onFrame != null) onFrame.onTime(t, active.clipIndex, total);
-        if (playing) postInvalidateDelayed(33);
+        if (playing || tempBorder != null) postInvalidateDelayed(33);
     }
 
     // ------------------------------------------------------------------- hud

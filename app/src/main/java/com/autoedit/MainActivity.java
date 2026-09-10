@@ -96,6 +96,12 @@ public class MainActivity extends Activity {
     private String selectedFormulaId = null;
     private EffectType selectedEffect = null;
     private TransitionType selectedTransition = null;
+    // ── MASTER BORDER / FRAME ──
+    private String selectedBorderPresetId = null;
+    private BorderEffectConfig pendingBorder = null;
+    private String borderSearch = "";
+    private String borderCategory = "All";
+    private boolean previewBorderActive = false;
 
     // --- export progress screen state (survives activity recreation; the
     //     service keeps exporting independently of the UI)
@@ -868,6 +874,7 @@ public class MainActivity extends Activity {
         addToolTile(tools, "canvas", R.drawable.ic_canvas, "Canvas", () -> canvasPanel());
         addToolTile(tools, "filters", R.drawable.ic_filters, "Filters", () -> filtersPanel());
         addToolTile(tools, "effects", R.drawable.ic_effects, "Effects", () -> effectsPanel());
+        addToolTile(tools, "frame", R.drawable.ic_frame, "Frame", () -> framePanel());
         addToolTile(tools, "adjust", R.drawable.ic_adjust, "Adjust", () -> adjustPanel());
         addToolTile(tools, "autoedit", R.drawable.ic_autoedit, "Auto Edit", () -> autoEditPanel());
         HorizontalScrollView toolsScroll = new HorizontalScrollView(this);
@@ -954,6 +961,9 @@ public class MainActivity extends Activity {
     private void resetSheetSelection() {
         selectedMotionId = null; selectedFormulaId = null;
         selectedEffect = null; selectedTransition = null;
+        selectedBorderPresetId = null;
+        // keep pendingBorder for live preview until sheet dismiss clears it explicitly
+        if (preview != null) preview.clearTempBorder();
     }
 
     // ---------------------------------------------------------------- bottom sheet
@@ -969,7 +979,13 @@ public class MainActivity extends Activity {
      */
     private void openSheet(String title) {
         PanelSheet s = sheet();
-        s.setOnDismiss(() -> { clearActiveTool(); resetSheetSelection(); });
+        s.setOnDismiss(() -> {
+            clearActiveTool();
+            resetSheetSelection();
+            pendingBorder = null;
+            if (preview != null) preview.clearTempBorder();
+            previewBorderActive = false;
+        });
         s.show();
         s.setTitle(title);
     }
@@ -2331,6 +2347,7 @@ public class MainActivity extends Activity {
         right.effect = c.effect;
         right.effectIntensity = c.effectIntensity;
         for (EffectLayer l : c.effectLayers) right.effectLayers.add(new EffectLayer(l.type, l.intensity));
+        if (c.borderEffect != null) right.borderEffect = c.borderEffect.copy();
         project.clips.add(at.clipIndex + 1, right);
         project.renumber();
         saveProject(true);
@@ -2635,6 +2652,307 @@ public class MainActivity extends Activity {
         panelHost.addView(sb);
     }
 
+
+    // ─────────────────────────────────────────────────────────────────
+    // MASTER BORDER / FRAME ENGINE — Effects -> Frame & Border
+    // Pure procedural, preview==export, metadata-only, Canvas-aligned.
+    // Library 39 presets (Neon 8 + Dual 5 + Glow 6 + Electric 5 + Cinematic 5 + Flow 4 + Special 6)
+    // Includes Neon Flow (blue+green moving glow). Every card real; no Coming Soon.
+    // Live preview: tap -> 2-3s loop temp overlay with Cancel/Apply (no immediate commit).
+    // Controls: intensity/opacity/thickness/glow/speed/corner/direction + colors.
+    // Duration: whole clip (default) or custom start/end (effectStart/End) — toggle below.
+    // Apply to Selected / All (one undo, O(n) metadata), Remove, Undo grouped.
+    // Compatibility: Motion+Border stays canvas-aligned, Transition+Border crossfades, Filter+Border layers order BG->Motion->Filter->Border->Text/Overlay.
+    // Canvas adaptive: 16:9/9:16/1:1/4:5 uses same FrameComposer geometry.
+    // Search + categories All/Neon/Glow/Electric/Cinematic/Color/Light/Special.
+    // WindowInsets + scroll handled by PanelSheet (fillViewport + clipToPadding false).
+    // ─────────────────────────────────────────────────────────────────
+    private void framePanel() {
+        openTool("frame");
+        boolean hasClips = !project.clips.isEmpty();
+        String scopeSel = effectiveSelection().isEmpty() ? (selected>=0? "Clip "+project.clips.get(selected).index : "All " + project.clips.size() + " clips") : effectiveSelection().size()+" selected";
+        PanelSheet s = sheet();
+        s.content().removeAllViews();
+        s.applyBar().removeAllViews();
+        openSheet("Frame & Border → " + scopeSel);
+
+        // Restore temp preview if pending already exists (re-entry keeps selection)
+        if (pendingBorder != null && preview != null) preview.setTempBorder(pendingBorder);
+
+        // ── search ──
+        EditText search = new EditText(this);
+        search.setHint("🔍 Search — neon, electric, glow, cinematic, rainbow, flow…");
+        search.setSingleLine(true);
+        search.setTextColor(AeDesign.TEXT);
+        search.setHintTextColor(AeDesign.MUTED);
+        search.setText(borderSearch);
+        search.setBackground(AeDesign.bg(AeDesign.SURFACE, dp(14), AeDesign.STROKE, 1));
+        search.setPadding(dp(12), dp(10), dp(12), dp(10));
+        search.addTextChangedListener(new android.text.TextWatcher(){
+            public void beforeTextChanged(CharSequence a,int b,int c,int d){}
+            public void onTextChanged(CharSequence a,int b,int c,int d){}
+            public void afterTextChanged(android.text.Editable e){
+                borderSearch = e.toString().trim();
+                if (!borderSearch.isEmpty()) borderCategory = "All";
+                framePanel();
+            }
+        });
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1,-2);
+        slp.setMargins(0, dp(2),0, dp(8));
+        s.content().addView(search, slp);
+
+        // ── category tabs ──
+        HorizontalScrollView tabScroll = new HorizontalScrollView(this);
+        tabScroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout tabs = row();
+        for (String cat : BorderEffectRegistry.categories()) {
+            final String c = cat;
+            boolean on = c.equalsIgnoreCase(borderCategory);
+            TextView tab = label(cat, 13, on? 0xff041018 : AeDesign.TEXT, Typeface.BOLD);
+            tab.setGravity(Gravity.CENTER);
+            tab.setPadding(dp(12), dp(8), dp(12), dp(8));
+            tab.setBackground(AeDesign.bg(on? AeDesign.ACCENT : AeDesign.SURFACE_2, dp(16), on? AeDesign.ACCENT : AeDesign.STROKE,1));
+            AeDesign.press(tab, () -> { borderCategory=c; borderSearch=""; framePanel(); });
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(-2,-2);
+            tlp.setMargins(dp(3),dp(2),dp(3),dp(6));
+            tabs.addView(tab, tlp);
+        }
+        tabScroll.addView(tabs);
+        s.content().addView(tabScroll, new LinearLayout.LayoutParams(-1,-2));
+
+        // ── selected line + live preview hint ──
+        String selName = selectedBorderPresetId==null ? "none — tap a card for 2–3s live preview" : BorderEffectRegistry.byId(selectedBorderPresetId)==null? "—" : BorderEffectRegistry.byId(selectedBorderPresetId).name;
+        s.content().addView(label("Selected: " + selName, 13, selectedBorderPresetId==null? AeDesign.MUTED: AeDesign.ACCENT, Typeface.BOLD));
+        if (hasClips) s.content().addView(label("Tap a border → live animated preview on the monitor (2–3s loop). Tweak below, then Cancel / Apply.", 12, AeDesign.MUTED, Typeface.NORMAL));
+        else s.content().addView(label("Add images first — preview shows on a placeholder until clips exist. Config still saves.",11, AeDesign.MUTED, Typeface.NORMAL));
+
+        // ── border preview state indicator (glow pulse when live) ──
+        if (previewBorderActive && pendingBorder != null) {
+            TextView live = label("◉ LIVE PREVIEW — monitoring clip", 12, 0xff49ff88, Typeface.BOLD);
+            live.setPadding(dp(6), dp(4), dp(6), dp(4));
+            live.setBackground(AeDesign.bg(0xff0b2214, dp(12), 0xff49ff88,1));
+            s.content().addView(live);
+        }
+
+        // ── build filtered list ──
+        java.util.List<BorderEffectRegistry.Preset> items;
+        if (borderSearch != null && !borderSearch.isEmpty()) items = BorderEffectRegistry.search(borderSearch);
+        else items = BorderEffectRegistry.byCategory(borderCategory);
+        if (borderSearch != null && !borderSearch.isEmpty()) s.content().addView(label("Search: \""+borderSearch+"\" ("+items.size()+")",12, AeDesign.MUTED, Typeface.NORMAL));
+        else if (items.isEmpty()) s.content().addView(label("No borders in this category.",12, AeDesign.MUTED, Typeface.NORMAL));
+
+        // ── card grid (2 rows if many) ──
+        LinearLayout grid = sheetCardsRow(s);
+        for (BorderEffectRegistry.Preset p : items) {
+            boolean isSel = p.id.equals(selectedBorderPresetId);
+            BorderPreviewView bpv = new BorderPreviewView(this);
+            bpv.setPreset(p);
+            LinearLayout card = previewCard(bpv, p.name, p.category + " • " + p.desc, isSel);
+            card.setContentDescription("Border " + p.name + (isSel?" selected":""));
+            AeDesign.tap(card, () -> {
+                // Tap = SELECT + LIVE PREVIEW (no commit)
+                selectedBorderPresetId = p.id;
+                // defaults from preset but preserve previous tweaks if same id re-tapped?
+                if (pendingBorder == null || !p.id.equals(pendingBorder.presetId)) {
+                    pendingBorder = new BorderEffectConfig(p.id);
+                    pendingBorder.thickness = p.defaultThickness;
+                    pendingBorder.glow = p.defaultGlow;
+                    pendingBorder.speed = p.defaultSpeed;
+                    pendingBorder.intensity = 1f; pendingBorder.opacity = 1f; pendingBorder.cornerRadius = 10f;
+                    // if a clip is selected and has a border, seed from it
+                    int ref = selected>=0 && selected<project.clips.size() ? selected : (project.clips.isEmpty()? -1:0);
+                    if (ref>=0 && project.clips.get(ref).borderEffect!=null && p.id.equals(project.clips.get(ref).borderEffect.presetId)) {
+                        pendingBorder = project.clips.get(ref).borderEffect.copy();
+                    }
+                }
+                previewBorderActive = true;
+                if (preview != null) preview.setTempBorder(pendingBorder);
+                framePanel(); // rebuild to show ring + controls
+            });
+            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,-2);
+            lp.setMargins(dp(4),dp(4),dp(4),dp(6));
+            grid.addView(card, lp);
+        }
+
+        // ── controls (only when a border is pending) ──
+        if (pendingBorder != null && selectedBorderPresetId != null) {
+            s.content().addView(label("— Tweaks (live) —",13, AeDesign.MUTED, Typeface.BOLD));
+            // intensity
+            s.content().addView(label("Intensity  " + Math.round(pendingBorder.intensity*100)+"%",13, AeDesign.TEXT, Typeface.BOLD));
+            s.content().addView(slider(0,100, Math.round(pendingBorder.intensity*100), v->{ pendingBorder.intensity=v/100f; if(preview!=null) preview.setTempBorder(pendingBorder); }));
+            s.content().addView(label("Opacity  " + Math.round(pendingBorder.opacity*100)+"%",13, AeDesign.TEXT, Typeface.BOLD));
+            s.content().addView(slider(0,100, Math.round(pendingBorder.opacity*100), v->{ pendingBorder.opacity=v/100f; if(preview!=null) preview.setTempBorder(pendingBorder); }));
+            s.content().addView(label("Thickness  " + Math.round(pendingBorder.thickness)+"dp",13, AeDesign.TEXT, Typeface.BOLD));
+            s.content().addView(slider(1,20, Math.round(pendingBorder.thickness), v->{ pendingBorder.thickness=v; if(preview!=null) preview.setTempBorder(pendingBorder); }));
+            s.content().addView(label("Glow / Blur  " + Math.round(pendingBorder.glow),13, AeDesign.TEXT, Typeface.BOLD));
+            s.content().addView(slider(0,12, Math.round(pendingBorder.glow), v->{ pendingBorder.glow=v; if(preview!=null) preview.setTempBorder(pendingBorder); }));
+            s.content().addView(label("Speed  " + Math.round(pendingBorder.speed*100)+"%",13, AeDesign.TEXT, Typeface.BOLD));
+            s.content().addView(slider(0,100, Math.round(pendingBorder.speed*100), v->{ pendingBorder.speed=v/100f; if(preview!=null) preview.setTempBorder(pendingBorder); }));
+            s.content().addView(label("Corner radius  " + Math.round(pendingBorder.cornerRadius)+"dp",13, AeDesign.TEXT, Typeface.BOLD));
+            s.content().addView(slider(0,32, Math.round(pendingBorder.cornerRadius), v->{ pendingBorder.cornerRadius=v; if(preview!=null) preview.setTempBorder(pendingBorder); }));
+
+            // direction
+            s.content().addView(label("Direction",13, AeDesign.TEXT, Typeface.BOLD));
+            LinearLayout dirs=rowWrap();
+            addChoice(dirs, pendingBorder.direction==0?"✓ Clockwise":"Clockwise", pendingBorder.direction==0, ()->{ pendingBorder.direction=0; if(preview!=null) preview.setTempBorder(pendingBorder); framePanel(); });
+            addChoice(dirs, pendingBorder.direction==1?"✓ Counter":"Counter", pendingBorder.direction==1, ()->{ pendingBorder.direction=1; if(preview!=null) preview.setTempBorder(pendingBorder); framePanel(); });
+            addChoice(dirs, pendingBorder.direction==2?"✓ Alternate":"Alternate", pendingBorder.direction==2, ()->{ pendingBorder.direction=2; if(preview!=null) preview.setTempBorder(pendingBorder); framePanel(); });
+            s.content().addView(dirs);
+
+            // quick colors (primary overrides)
+            s.content().addView(label("Primary color (overrides preset)",13, AeDesign.TEXT, Typeface.BOLD));
+            LinearLayout cols=rowWrap();
+            int[] quick={0, 0xFF00D4FF, 0xFFFF2E97, 0xFF00FF88, 0xFFFFD700, 0xFF9D00FF, 0xFFFFFFFF, 0xFF000000};
+            String[] names={"Preset","Cyan","Pink","Green","Gold","Purple","White","Black"};
+            for (int i=0;i<quick.length;i++){
+                final int col=quick[i]; final String nm=names[i];
+                boolean on = (col==0 && pendingBorder.primaryColor==0) || pendingBorder.primaryColor==col;
+                TextView dot=new TextView(this);
+                dot.setText(on?"✓ ":""); dot.setGravity(Gravity.CENTER);
+                dot.setTextSize(10f); dot.setTextColor(col==0xFFFFFFFF? 0xff041018 : 0xffffffff);
+                dot.setBackground(AeDesign.bg(col==0? AeDesign.SURFACE_2 : col, dp(14), on? AeDesign.ACCENT: AeDesign.STROKE, on?2:1));
+                LinearLayout.LayoutParams dlp=new LinearLayout.LayoutParams(dp(46), dp(32));
+                dlp.setMargins(dp(3),dp(3),dp(3),dp(3));
+                dot.setLayoutParams(dlp);
+                dot.setOnClickListener(v->{ pendingBorder.primaryColor=col; if(preview!=null) preview.setTempBorder(pendingBorder); framePanel(); });
+                cols.addView(dot);
+            }
+            s.content().addView(cols);
+
+            // duration toggle — whole clip vs custom range
+            s.content().addView(label("Duration — where on the clip",13, AeDesign.TEXT, Typeface.BOLD));
+            LinearLayout durToggle=rowWrap();
+            boolean whole = pendingBorder.startMs==0 && pendingBorder.endMs==0;
+            addChoice(durToggle, whole?"✓ Entire clip":"Entire clip", whole, ()->{ pendingBorder.startMs=0; pendingBorder.endMs=0; framePanel(); });
+            addChoice(durToggle, !whole?"✓ Custom range":"Custom range", !whole, ()->{
+                if (whole) { pendingBorder.startMs=0; pendingBorder.endMs=2000; }
+                framePanel();
+            });
+            s.content().addView(durToggle);
+            if (!whole) {
+                int maxSec = hasClips ? Math.max(1, Math.round(project.clips.get(Math.max(0, selected)).durationSec)) : 8;
+                s.content().addView(label("Start  " + fmt(pendingBorder.startMs/1000f),13, AeDesign.TEXT, Typeface.BOLD));
+                s.content().addView(slider(0, maxSec, (int)(pendingBorder.startMs/1000), v->{ pendingBorder.startMs=v*1000L; if(pendingBorder.endMs<=pendingBorder.startMs) pendingBorder.endMs=(v+1)*1000L; framePanel(); }));
+                s.content().addView(label("End  " + (pendingBorder.endMs<=0? "until end": fmt(pendingBorder.endMs/1000f)),13, AeDesign.TEXT, Typeface.BOLD));
+                s.content().addView(slider(0, maxSec, (int)(pendingBorder.endMs/1000), v->{ pendingBorder.endMs=v*1000L; framePanel(); }));
+            }
+        }
+
+        // ── hint + current clip state ──
+        if (!hasClips) {
+            s.content().addView(label("Add images to see borders on real clips. Borders are saved per-clip metadata, so 1000 clips cost nothing extra.",11, AeDesign.MUTED, Typeface.NORMAL));
+        } else {
+            int withBorder=0; for(TimelineClip c: project.clips) if(c.borderEffect!=null) withBorder++;
+            s.content().addView(label(withBorder+" / "+project.clips.size()+" clips have a border. Tap a card to preview, then Apply.",12, AeDesign.MUTED, Typeface.NORMAL));
+        }
+
+        // ── apply bar: Cancel + Apply Selected / All + Remove ──
+        LinearLayout bar = row();
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        Button cancel = AeDesign.button(this, "Cancel", false);
+        AeDesign.press(cancel, () -> {
+            pendingBorder=null; selectedBorderPresetId=null; previewBorderActive=false;
+            if(preview!=null) preview.clearTempBorder();
+            if(sheet!=null) sheet.dismiss();
+            clearActiveTool();
+        });
+        bar.addView(cancel, new LinearLayout.LayoutParams(0, dp(48), 0.9f));
+
+        boolean hasSel = selected>=0 && selected<project.clips.size();
+        boolean hasSelection = !effectiveSelection().isEmpty();
+        String selLabel = hasSelection ? effectiveSelection().size()+" clips" : (hasSel? "Clip "+project.clips.get(selected).index : "All");
+        Button applySel = AeDesign.button(this, "Apply to "+selLabel, true);
+        AeDesign.press(applySel, () -> {
+            if (pendingBorder==null || selectedBorderPresetId==null) { toast("Pick a border first"); return; }
+            Set<Integer> targets = effectiveSelection();
+            if (targets.isEmpty()) {
+                if (selected>=0 && selected<project.clips.size()) { targets=new HashSet<>(); targets.add(selected); }
+                else if (!project.clips.isEmpty()) { // apply to first if nothing selected but has clips -> apply to all metadata
+                    applyBorderToAll(pendingBorder);
+                    return;
+                } else { toast("Add images first"); return; }
+            }
+            applyBorderToSelection(pendingBorder, targets);
+        });
+        bar.addView(applySel, new LinearLayout.LayoutParams(0, dp(48), 1.6f));
+
+        Button applyAll = AeDesign.button(this, "All ("+project.clips.size()+")", false);
+        AeDesign.press(applyAll, () -> {
+            if (pendingBorder==null) { toast("Pick a border first"); return; }
+            applyBorderToAll(pendingBorder);
+        });
+        bar.addView(applyAll, new LinearLayout.LayoutParams(0, dp(48), 1.15f));
+        s.applyBar().addView(bar, new LinearLayout.LayoutParams(-1,-2));
+
+        // second row: Remove + Undo
+        LinearLayout bar2=row();
+        bar2.setGravity(Gravity.CENTER_VERTICAL);
+        Button remove = AeDesign.button(this, "Remove", false);
+        AeDesign.press(remove, () -> removeBorderFromSelection());
+        bar2.addView(remove, new LinearLayout.LayoutParams(0, dp(44), 1));
+        Button undoB = AeDesign.button(this, "Undo", false);
+        AeDesign.press(undoB, () -> { undo(); framePanel(); });
+        bar2.addView(undoB, new LinearLayout.LayoutParams(0, dp(44), 1));
+        LinearLayout.LayoutParams b2lp=new LinearLayout.LayoutParams(-1,-2);
+        b2lp.topMargin=dp(6);
+        s.applyBar().addView(bar2, b2lp);
+
+        sheetHint(s, "Border sits canvas-aligned (Background → Image/Motion → Filter → Border → Text). Preview loop is temporary — real commit only on Apply. One undo covers the batch.");
+    }
+
+    private void applyBorderToSelection(BorderEffectConfig cfg, Set<Integer> targets){
+        if (project.clips.isEmpty()) { toast("Add images first"); return; }
+        pushUndo();
+        for(int idx: targets) if(idx>=0 && idx<project.clips.size()) project.clips.get(idx).setBorder(cfg);
+        pendingBorder=null; selectedBorderPresetId=null; previewBorderActive=false;
+        if(preview!=null) preview.clearTempBorder();
+        saveProject(true);
+        if(sheet!=null) sheet.dismiss(); clearActiveTool();
+        buildTimeline(false);
+        if(preview!=null) preview.invalidate();
+        toast("Border applied to "+targets.size()+" clip(s)");
+    }
+    private void applyBorderToAll(BorderEffectConfig cfg){
+        if (project.clips.isEmpty()) { toast("Add images first"); return; }
+        pushUndo();
+        for(TimelineClip c: project.clips) c.setBorder(cfg);
+        pendingBorder=null; selectedBorderPresetId=null; previewBorderActive=false;
+        if(preview!=null) preview.clearTempBorder();
+        saveProject(true);
+        if(sheet!=null) sheet.dismiss(); clearActiveTool();
+        buildTimeline(false);
+        if(preview!=null) preview.invalidate();
+        toast("Border applied to all "+project.clips.size()+" clips");
+    }
+    private void removeBorderFromSelection(){
+        Set<Integer> targets = effectiveSelection();
+        if (targets.isEmpty() && selected>=0 && selected<project.clips.size()) { targets=new HashSet<>(); targets.add(selected); }
+        if (targets.isEmpty()) {
+            // if nothing selected, remove from all where exists
+            int cnt=0; for(TimelineClip c: project.clips) if(c.hasBorder()) cnt++;
+            if(cnt==0){ toast("No borders to remove"); return; }
+            pushUndo();
+            for(TimelineClip c: project.clips) c.clearBorder();
+            pendingBorder=null; selectedBorderPresetId=null; previewBorderActive=false;
+            if(preview!=null) preview.clearTempBorder();
+            saveProject(true);
+            if(sheet!=null) sheet.dismiss(); clearActiveTool();
+            buildTimeline(false);
+            if(preview!=null) preview.invalidate();
+            toast("Removed border from all");
+            return;
+        }
+        pushUndo();
+        for(int idx: targets) if(idx>=0 && idx<project.clips.size()) project.clips.get(idx).clearBorder();
+        pendingBorder=null; selectedBorderPresetId=null; previewBorderActive=false;
+        if(preview!=null) preview.clearTempBorder();
+        saveProject(true);
+        if(sheet!=null) sheet.dismiss(); clearActiveTool();
+        buildTimeline(false);
+        if(preview!=null) preview.invalidate();
+        toast("Border removed from "+targets.size()+" clip(s)");
+    }
+
     private void autoEditPanel() {
         openTool("autoedit");
         if (panelHost == null) return;
@@ -2772,6 +3090,8 @@ public class MainActivity extends Activity {
         for (EffectLayer l : c.effectLayers) n.effectLayers.add(l.copy());
         n.transition = c.transition;
         n.transitionDurationSec = c.transitionDurationSec;
+        n.transitionPresetId = c.transitionPresetId;
+        if (c.borderEffect != null) n.borderEffect = c.borderEffect.copy();
         project.clips.add(selected + 1, n);
         selected = selected + 1;
         saveProject(true);
@@ -3822,6 +4142,7 @@ public class MainActivity extends Activity {
             for (EffectLayer l : c.effectLayers) n.effectLayers.add(l.copy());
             n.transition = c.transition; n.transitionDurationSec = c.transitionDurationSec;
             n.transitionPresetId = c.transitionPresetId;
+            if (c.borderEffect != null) n.borderEffect = c.borderEffect.copy();
             toAdd.add(n);
         }
         project.clips.addAll(toAdd);

@@ -35,6 +35,9 @@ public class TimelineClip {
     /** Ordered effect stack (spec §10). Empty falls back to {@link #effect}. */
     public ArrayList<EffectLayer> effectLayers = new ArrayList<>();
 
+    /** MASTER BORDER / FRAME effect (per-clip). Null = no border. Distinct from Transition. */
+    public BorderEffectConfig borderEffect = null;
+
     public TimelineClip(String uri, int index, Formula formula) {
         this.uri = uri; this.index = index; this.formula = formula;
     }
@@ -106,6 +109,13 @@ public class TimelineClip {
         return effectLayers;
     }
 
+    // -------------------------------------------------------------- border / frame
+
+    public boolean hasBorder() { return borderEffect != null && borderEffect.presetId != null && !borderEffect.presetId.isEmpty(); }
+    public void setBorder(BorderEffectConfig cfg) { borderEffect = cfg == null ? null : cfg.copy(); }
+    public void clearBorder() { borderEffect = null; }
+    public BorderEffectConfig getBorder() { return borderEffect; }
+
     // ------------------------------------------------------------ serialize
 
     public JSONObject toJson() throws JSONException {
@@ -124,6 +134,7 @@ public class TimelineClip {
         JSONArray layers = new JSONArray();
         for (EffectLayer l : effectLayers) layers.put(l.toJson());
         o.put("effectLayers", layers);
+        if (borderEffect != null && borderEffect.presetId != null) o.put("borderEffect", borderEffect.toJson());
         return o;
     }
 }

@@ -272,6 +272,12 @@ public class ProjectStore {
                         clip.effectIntensity = clip.effectLayers.get(0).intensity;
                     }
                 }
+                // ── MASTER BORDER / FRAME (per-clip) ──
+                JSONObject be = c.optJSONObject("borderEffect");
+                if (be == null) be = c.optJSONObject("border");
+                if (be == null) be = c.optJSONObject("frameEffect");
+                BorderEffectConfig bc = BorderEffectConfig.fromJson(be);
+                if (bc != null) clip.borderEffect = bc;
                 p.clips.add(clip);
             }
 
