@@ -84,6 +84,7 @@ public class MainActivity extends Activity {
     private WaveformTrackView waveTrack;
     private OverlayTrackView ovlTrack;
     private float tlZoom = 1f;          // 0.5x..4x
+    private SeekBar tlZoomSlider;
     private int resizing = -1;          // clip index currently edge-dragged
     private int selectedOverlay = -1;   // overlaysPanel selection
     private String pendingOverlayCorner = null; // corner preset awaiting a logo pick
@@ -412,7 +413,22 @@ public class MainActivity extends Activity {
         root.addView(create, cp);
 
         root.addView(label("Recent Projects", 20, AeDesign.TEXT, Typeface.BOLD));
-        if (project.clips.isEmpty()) emptyState(); else projectCard(project);
+        java.util.List<EditProject> allProjects = store.loadAll();
+        if (allProjects.isEmpty()) {
+            if (project.clips.isEmpty()) emptyState(); else projectCard(project);
+        } else {
+            for (EditProject p : allProjects) projectCard(p);
+            boolean currentInList = false;
+            for (EditProject x : allProjects) if (x.id.equals(project.id)) { currentInList = true; break; }
+            if (project.clips.isEmpty() && !currentInList) {
+                LinearLayout hint = AeDesign.card(this);
+                hint.setGravity(Gravity.CENTER);
+                TextView t = label("Current draft is empty — create a new project or add images", 12, AeDesign.MUTED, Typeface.NORMAL);
+                t.setGravity(Gravity.CENTER);
+                hint.addView(t);
+                root.addView(hint, new LinearLayout.LayoutParams(-1, -2));
+            }
+        }
 
         // ---- Prompt Library entry (infrastructure per master task Part 13) ----
         LinearLayout promptCard = AeDesign.card(this);
@@ -525,22 +541,52 @@ public class MainActivity extends Activity {
         LinearLayout card = AeDesign.card(this);
         card.setPadding(dp(18), dp(18), dp(18), dp(18));
         LinearLayout top = row();
-        TextView thumb = label(String.format(Locale.US, "%d", p.clips.size()), 26, AeDesign.ACCENT, Typeface.BOLD);
-        thumb.setGravity(Gravity.CENTER);
-        thumb.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(18), AeDesign.STROKE, 1));
-        top.addView(thumb, new LinearLayout.LayoutParams(dp(86), dp(72)));
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        // thumbnail preview: try to load first clip bitmap sampled
+        ImageView thumbIv = new ImageView(this);
+        TextView thumbFallback = label(String.format(Locale.US, "%d", p.clips.size()), 26, AeDesign.ACCENT, Typeface.BOLD);
+        thumbFallback.setGravity(Gravity.CENTER);
+        thumbFallback.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(18), AeDesign.STROKE, 1));
+        FrameLayout thumbBox = new FrameLayout(this);
+        thumbBox.addView(thumbIv, new FrameLayout.LayoutParams(dp(86), dp(72)));
+        thumbBox.addView(thumbFallback, new FrameLayout.LayoutParams(dp(86), dp(72)));
+        // try load thumb
+        if (!p.clips.isEmpty() && p.clips.get(0).uri != null) {
+            try {
+                android.graphics.Bitmap bm = null;
+                try (java.io.InputStream is = getContentResolver().openInputStream(android.net.Uri.parse(p.clips.get(0).uri))) {
+                    if (is != null) {
+                        android.graphics.BitmapFactory.Options opts = new android.graphics.BitmapFactory.Options();
+                        opts.inSampleSize = 4;
+                        bm = android.graphics.BitmapFactory.decodeStream(is, null, opts);
+                    }
+                } catch (Exception ignored) {}
+                if (bm != null) {
+                    thumbIv.setImageBitmap(bm);
+                    thumbIv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                    thumbFallback.setVisibility(View.GONE);
+                }
+            } catch (Exception ignored) {}
+        }
+        top.addView(thumbBox, new LinearLayout.LayoutParams(dp(86), dp(72)));
         LinearLayout info = col();
         info.setPadding(dp(14), 0, 0, 0);
         info.addView(label(p.name, 19, AeDesign.TEXT, Typeface.BOLD));
         info.addView(label(p.clips.size() + " clips • " + fmt(p.totalDurationSec()) + " • " + p.width + "×" + p.height + " • " + p.fitMode.label, 13, AeDesign.MUTED, Typeface.NORMAL));
-        info.addView(label("Auto saved • " + (p.audioUri == null ? "no audio" : "audio linked"), 12, 0xff6f8ca4, Typeface.NORMAL));
+        String lm = android.text.format.DateFormat.format("MMM dd, HH:mm", new java.util.Date(p.lastModified)).toString();
+        info.addView(label("Modified: " + lm + " • " + (p.hasAudio() ? "audio ✓" : "no audio"), 12, 0xff6f8ca4, Typeface.NORMAL));
         top.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
         ImageView more = AeDesign.iconButton(this, R.drawable.ic_settings, "Project menu", false);
-        AeDesign.press(more, () -> projectMenu());
+        AeDesign.press(more, () -> projectMenu(p));
         top.addView(more, new LinearLayout.LayoutParams(dp(44), dp(44)));
         card.addView(top);
-        Button cont = AeDesign.button(this, "Continue Editing", true);
-        AeDesign.press(cont, () -> showEditor());
+        Button cont = AeDesign.button(this, p.id.equals(project.id) ? "Continue Editing" : "Open Project", true);
+        AeDesign.press(cont, () -> {
+            project = p;
+            // ensure current points to this project
+            saveProject(true);
+            showEditor();
+        });
         LinearLayout.LayoutParams lpbtn = new LinearLayout.LayoutParams(-1, dp(52));
         lpbtn.setMargins(0, dp(16), 0, 0);
         card.addView(cont, lpbtn);
@@ -549,22 +595,41 @@ public class MainActivity extends Activity {
         root.addView(card, lp);
     }
 
-    private void projectMenu() {
-        String[] ops = {"Rename", "Duplicate", "Delete", "Project Settings"};
-        new AlertDialog.Builder(this).setTitle("Project").setItems(ops, (d, w) -> {
-            if (w == 0) renameProject();
-            if (w == 1) { project.name = project.name + " Copy"; saveProject(true); showHome(); }
-            if (w == 2) { project = new EditProject(); saveProject(true); showHome(); }
-            if (w == 3) showCreateProject(true);
+    private void projectMenu(EditProject p) {
+        String[] ops = {"Rename", "Duplicate", "Delete", "Open", "Project Settings"};
+        new AlertDialog.Builder(this).setTitle(p.name).setItems(ops, (d, w) -> {
+            if (w == 0) renameProject(p);
+            if (w == 1) { store.duplicateProject(p.id); showHome(); }
+            if (w == 2) {
+                new AlertDialog.Builder(this).setTitle("Delete project?").setMessage("Delete \"" + p.name + "\" ? This cannot be undone.")
+                    .setPositiveButton("Delete", (dd, ww) -> {
+                        store.deleteProject(p.id);
+                        if (p.id.equals(project.id)) { project = new EditProject(); saveProject(true); }
+                        showHome();
+                    }).setNegativeButton("Cancel", null).show();
+            }
+            if (w == 3) { project = store.loadProject(p.id); if (project == null) project = p; saveProject(true); showEditor(); }
+            if (w == 4) { project = store.loadProject(p.id); if (project != null) { saveProject(true); showCreateProject(true); } }
         }).show();
     }
 
-    private void renameProject() {
+    private void projectMenu() { projectMenu(project); }
+
+    private void renameProject(EditProject p) {
         final EditText e = new EditText(this);
-        e.setText(project.name);
+        e.setText(p.name);
         new AlertDialog.Builder(this).setTitle("Rename project").setView(e)
-                .setPositiveButton("Save", (d, w) -> { project.name = e.getText().toString(); saveProject(true); showHome(); }).show();
+                .setPositiveButton("Save", (d, w) -> {
+                    String nn = e.getText().toString().trim();
+                    if (!nn.isEmpty()) {
+                        store.renameProject(p.id, nn);
+                        if (p.id.equals(project.id)) project.name = nn;
+                        showHome();
+                    }
+                }).show();
     }
+
+    private void renameProject() { renameProject(project); }
 
     // ---------------------------------------------------------------- create
 
@@ -689,6 +754,24 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams zilp = new LinearLayout.LayoutParams(-2, -2);
         zilp.leftMargin = dp(4);
         tHead.addView(zIn, zilp);
+        tlZoomSlider = new SeekBar(this);
+        tlZoomSlider.setMax(100);
+        tlZoomSlider.setProgress((int)((tlZoom - 0.5f)/3.5f*100));
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(dp(96), -2);
+        slp.leftMargin = dp(4);
+        slp.rightMargin = dp(4);
+        tlZoomSlider.setContentDescription("Timeline zoom slider 0.5x to 4x");
+        tHead.addView(tlZoomSlider, slp);
+        tlZoomSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
+                if (fromUser) {
+                    float z = 0.5f + p / 100f * 3.5f;
+                    setTlZoom(z);
+                }
+            }
+            public void onStartTrackingTouch(SeekBar s) {}
+            public void onStopTrackingTouch(SeekBar s) {}
+        });
         ImageView selAll = iconButton(R.drawable.ic_copy, this::selectAllClips);
         LinearLayout.LayoutParams sall = new LinearLayout.LayoutParams(-2, -2);
         sall.leftMargin = dp(4);
@@ -1356,6 +1439,7 @@ public class MainActivity extends Activity {
 
     private void setTlZoom(float z) {
         tlZoom = Math.max(0.5f, Math.min(4f, z));
+        if (tlZoomSlider != null) tlZoomSlider.setProgress((int)((tlZoom - 0.5f)/3.5f*100));
         if (ruler != null) ruler.setZoom(tlZoom);
         if (project != null && project.clips.size() > VIRTUAL_THRESHOLD) {
             buildPrefixWidths();
@@ -1480,6 +1564,12 @@ public class MainActivity extends Activity {
         Button applyAll = AeDesign.button(this, "APPLY THIS DURATION TO ALL CLIPS", true);
         AeDesign.press(applyAll, () -> applyDurationToAll(Math.round(c.durationSec)));
         panelHost.addView(applyAll, new LinearLayout.LayoutParams(-1, dp(46)));
+
+        panelHost.addView(label("Crop / Fit (black wedges never shown — safe transform)", 12, AeDesign.MUTED, Typeface.BOLD));
+        LinearLayout cropRow = rowWrap();
+        addChoice(cropRow, project.fitMode == FitMode.FILL ? "✓ Fill Crop" : "Fill Crop", project.fitMode == FitMode.FILL, () -> { pushUndo(); project.fitMode = FitMode.FILL; saveProject(true); if (preview != null) preview.invalidate(); showClipPanel(); });
+        addChoice(cropRow, project.fitMode == FitMode.FIT ? "✓ Fit Letterbox" : "Fit Letterbox", project.fitMode == FitMode.FIT, () -> { pushUndo(); project.fitMode = FitMode.FIT; saveProject(true); if (preview != null) preview.invalidate(); showClipPanel(); });
+        panelHost.addView(cropRow);
 
         LinearLayout actions = rowWrap();
         addAction(actions, "Duplicate", () -> duplicateClip());
@@ -2529,6 +2619,7 @@ public class MainActivity extends Activity {
         LinearLayout motionRow = rowWrap();
         addAction(motionRow, "Balanced", this::applyAutoMotionToSelection);
         addAction(motionRow, "Random", () -> applyRandomMotionToSelection(false));
+        addAction(motionRow, "Minimal", this::applyMinimalMotionToSelection);
         addAction(motionRow, "Cinematic Seq", () -> { pushUndo(); autoEdit(1); toast("Cinematic auto edit"); });
         panelHost.addView(motionRow);
         panelHost.addView(label("Create video presets", 13, AeDesign.TEXT, Typeface.BOLD));
@@ -3857,6 +3948,29 @@ public class MainActivity extends Activity {
         buildTimeline(false);
         if (preview != null) preview.invalidate();
         toast("Random motion \u2192 " + sel.size() + " clips");
+    }
+
+    private void applyMinimalMotionToSelection() {
+        Set<Integer> sel = effectiveSelection();
+        if (sel.isEmpty()) {
+            if (project.clips.isEmpty()) { toast("No clips"); return; }
+            sel = new HashSet<>();
+            for (int i=0;i<project.clips.size();i++) sel.add(i);
+        }
+        String[] minimalIds = {"33","18","34","00"};
+        pushUndo();
+        int idx=0;
+        List<Integer> ordered = new ArrayList<>(sel);
+        Collections.sort(ordered);
+        for (int clipIdx : ordered) {
+            String mid = minimalIds[idx % minimalIds.length];
+            project.clips.get(clipIdx).formula = formulas.byId(mid);
+            idx++;
+        }
+        saveProject(true);
+        buildTimeline(false);
+        if (preview != null) preview.invalidate();
+        toast("Minimal motion \u2192 " + sel.size() + " clips (subtle)");
     }
 
     private void fitImagesToAudio() {

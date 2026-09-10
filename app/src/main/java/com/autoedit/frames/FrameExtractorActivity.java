@@ -23,6 +23,13 @@ import android.widget.*;
 
 import com.autoedit.R;
 import com.autoedit.ui.AeDesign;
+import com.autoedit.model.EditProject;
+import com.autoedit.model.TimelineClip;
+import com.autoedit.model.ExportPreset;
+import com.autoedit.model.AspectRatio;
+import com.autoedit.model.FitMode;
+import com.autoedit.project.ProjectStore;
+import com.autoedit.engine.FormulaEngine;
 
 import java.io.File;
 import java.io.IOException;
@@ -486,6 +493,14 @@ public class FrameExtractorActivity extends Activity {
         });
         root.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1));
 
+        // ---- Phase 3/4 integrated workflow: Save to Gallery / Create Project / Add to Existing ----
+        LinearLayout wfRow = rowWrap();
+        addAction(wfRow, "Save to Gallery", this::saveFramesToGallery);
+        addAction(wfRow, "Create New Project", this::showCreateProjectDialog);
+        addAction(wfRow, "Add to Existing", this::addToExistingProject);
+        root.addView(wfRow);
+        root.addView(label("Workflow: Save to Gallery (no ZIP) • Create New Project → Timeline • Add to Existing Project", 11, AeDesign.MUTED, Typeface.NORMAL));
+
         Button zip = AeDesign.button(this, "📦  CREATE ZIP", true);
         AeDesign.press(zip, this::createZip);
         LinearLayout.LayoutParams zlp = new LinearLayout.LayoutParams(-1, dp(56));
@@ -635,6 +650,180 @@ public class FrameExtractorActivity extends Activity {
                 Log.i(TAG, "Saved to gallery uri=" + s0.uri + " name=" + s0.displayName);
             });
         }, "AutoEditGallerySave").start();
+    }
+
+    // ====================================================== CREATE PROJECT (Phase 4)
+    private ExportPreset pendingPreset = ExportPreset.PORTRAIT_9_16;
+    private int pendingDurSec = 3;
+
+    private void showCreateProjectDialog() {
+        List<File> list = new ArrayList<>();
+        for (File f : frames) if (selected.isEmpty() || selected.contains(f.getName())) list.add(f);
+        if (list.isEmpty()) { toast("Select at least one frame"); return; }
+        LinearLayout container = col();
+        container.setPadding(dp(16), dp(12), dp(16), dp(12));
+        EditText nameEdit = new EditText(this);
+        nameEdit.setHint("Project Name");
+        nameEdit.setText("Episode " + (new ProjectStore(this).loadAll().size() + 1));
+        nameEdit.setTextColor(AeDesign.TEXT);
+        nameEdit.setHintTextColor(AeDesign.MUTED);
+        nameEdit.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(12), AeDesign.STROKE, 1));
+        nameEdit.setPadding(dp(12), dp(10), dp(12), dp(10));
+        container.addView(nameEdit, new LinearLayout.LayoutParams(-1, -2));
+        container.addView(label("Canvas Ratio (preview will render in this ratio)", 12, AeDesign.MUTED, Typeface.BOLD));
+        pendingPreset = ExportPreset.PORTRAIT_9_16;
+        LinearLayout ratioRow = rowWrap();
+        ExportPreset[] presets = {ExportPreset.PORTRAIT_9_16, ExportPreset.LANDSCAPE_16_9, ExportPreset.SQUARE_1_1, ExportPreset.PORTRAIT_4_5};
+        String[] rLabels = {"9:16 Reels/Shorts", "16:9 YouTube", "1:1 Square", "4:5 Instagram"};
+        for (int i = 0; i < presets.length; i++) {
+            final ExportPreset pp = presets[i];
+            TextView chip = label(rLabels[i], 11, AeDesign.TEXT, Typeface.BOLD);
+            chip.setGravity(Gravity.CENTER);
+            chip.setBackground(AeDesign.bg(pendingPreset == pp ? 0xff12395c : AeDesign.SURFACE_2, dp(14), pendingPreset == pp ? AeDesign.ACCENT : AeDesign.STROKE, pendingPreset == pp ? 2 : 1));
+            chip.setPadding(dp(10), dp(8), dp(10), dp(8));
+            final int idx = i;
+            chip.setOnClickListener(v -> {
+                pendingPreset = pp;
+                for (int k = 0; k < ratioRow.getChildCount(); k++) {
+                    TextView c = (TextView) ratioRow.getChildAt(k);
+                    boolean on = k == idx;
+                    c.setBackground(AeDesign.bg(on ? 0xff12395c : AeDesign.SURFACE_2, dp(14), on ? AeDesign.ACCENT : AeDesign.STROKE, on ? 2 : 1));
+                }
+            });
+            LinearLayout.LayoutParams lpp = new LinearLayout.LayoutParams(-2, dp(38));
+            lpp.setMargins(dp(4), dp(4), dp(4), dp(4));
+            ratioRow.addView(chip, lpp);
+        }
+        container.addView(ratioRow);
+        container.addView(label("Default duration per image", 12, AeDesign.MUTED, Typeface.BOLD));
+        pendingDurSec = 3;
+        LinearLayout durRow = rowWrap();
+        for (int s = 3; s <= 8; s++) {
+            final int sec = s;
+            TextView chip = label(sec + "s", 12, AeDesign.TEXT, Typeface.BOLD);
+            chip.setGravity(Gravity.CENTER);
+            chip.setBackground(AeDesign.bg(pendingDurSec == sec ? 0xff12395c : AeDesign.SURFACE_2, dp(14), pendingDurSec == sec ? AeDesign.ACCENT : AeDesign.STROKE, pendingDurSec == sec ? 2 : 1));
+            chip.setPadding(dp(12), dp(8), dp(12), dp(8));
+            chip.setOnClickListener(v -> {
+                pendingDurSec = sec;
+                for (int k = 0; k < durRow.getChildCount(); k++) {
+                    TextView c2 = (TextView) durRow.getChildAt(k);
+                    int ss = 3 + k;
+                    boolean on = ss == sec;
+                    c2.setBackground(AeDesign.bg(on ? 0xff12395c : AeDesign.SURFACE_2, dp(14), on ? AeDesign.ACCENT : AeDesign.STROKE, on ? 2 : 1));
+                }
+            });
+            LinearLayout.LayoutParams lpp = new LinearLayout.LayoutParams(dp(48), dp(38));
+            lpp.setMargins(dp(4), dp(4), dp(4), dp(4));
+            durRow.addView(chip, lpp);
+        }
+        container.addView(durRow);
+        container.addView(label(list.size() + " frames → Timeline (order preserved: IMG_001, IMG_002...)", 11, AeDesign.MUTED, Typeface.NORMAL));
+        new AlertDialog.Builder(this).setTitle("Create New Project").setView(container)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Create (" + list.size() + " clips)", (d, w) -> {
+                String nm = nameEdit.getText().toString().trim();
+                if (nm.isEmpty()) nm = "Episode " + (new ProjectStore(this).loadAll().size() + 1);
+                doCreateNewProject(nm, pendingPreset, pendingDurSec, list);
+            }).show();
+    }
+
+    private void doCreateNewProject(String name, ExportPreset preset, int durSec, List<File> src) {
+        try {
+            EditProject p = new EditProject();
+            p.name = name;
+            // Canvas mapping
+            p.exportPreset = preset;
+            p.width = preset.width;
+            p.height = preset.height;
+            if (preset == ExportPreset.PORTRAIT_9_16) { p.aspectRatio = AspectRatio.R9_16; }
+            else if (preset == ExportPreset.LANDSCAPE_16_9) { p.aspectRatio = AspectRatio.R9_16; // will correct below
+                p.aspectRatio = AspectRatio.R16_9; }
+            else if (preset == ExportPreset.SQUARE_1_1) { p.aspectRatio = AspectRatio.R1_1; }
+            else if (preset == ExportPreset.PORTRAIT_4_5) { p.aspectRatio = AspectRatio.R4_5; }
+            else { p.aspectRatio = AspectRatio.R9_16; }
+            // correct aspect for landscape
+            if (preset == ExportPreset.LANDSCAPE_16_9) p.aspectRatio = AspectRatio.R16_9;
+            if (p.width %2==1) p.width++; if (p.height %2==1) p.height++;
+            p.fps = 30;
+            p.fitMode = FitMode.FILL;
+            p.defaultDuration = durSec;
+            FormulaEngine fe = new FormulaEngine();
+            // Ensure src sorted by name (frame order)
+            src.sort(Comparator.comparing(File::getName));
+            // Copy files to persistent app storage so URIs survive cache clear
+            File persistDir = new File(getFilesDir(), "frame_projects/" + p.id);
+            persistDir.mkdirs();
+            for (int i = 0; i < src.size(); i++) {
+                File f = src.get(i);
+                File dest = new File(persistDir, String.format(Locale.US, "%04d_%s", i+1, f.getName()));
+                try { copyFile(f, dest); } catch (Exception e) { dest = f; }
+                String uri = Uri.fromFile(dest).toString();
+                TimelineClip clip = new TimelineClip(uri, p.clips.size()+1, fe.defaultFormula());
+                clip.setDurationSeconds(durSec);
+                p.clips.add(clip);
+            }
+            p.renumber();
+            ProjectStore store = new ProjectStore(this);
+            store.save(p);
+            new AlertDialog.Builder(this).setTitle("Project Created")
+                .setMessage(p.name + " with " + p.clips.size() + " clips (" + durSec + "s each) → Timeline ready. Open editor now?")
+                .setPositiveButton("Open Editor", (d, w) -> {
+                    finish();
+                    Intent it = new Intent(this, com.autoedit.MainActivity.class);
+                    it.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                    startActivity(it);
+                })
+                .setNegativeButton("Stay Here", null)
+                .show();
+            toast("Created " + p.name + " (" + p.clips.size() + " clips)");
+        } catch (Exception e) {
+            Log.e(TAG, "Create project failed", e);
+            toast("Create failed: " + e.getMessage());
+        }
+    }
+
+    private void addToExistingProject() {
+        List<File> list = new ArrayList<>();
+        for (File f : frames) if (selected.isEmpty() || selected.contains(f.getName())) list.add(f);
+        if (list.isEmpty()) { toast("Select at least one frame"); return; }
+        ProjectStore store = new ProjectStore(this);
+        EditProject cur = store.load();
+        if (cur == null) cur = new EditProject();
+        // dialog to confirm
+        EditProject curFinal = cur;
+        new AlertDialog.Builder(this).setTitle("Add to Existing Project")
+            .setMessage("Add " + list.size() + " frame(s) to current project \"" + cur.name + "\" (" + cur.clips.size() + " clips existing)?")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Add (" + list.size() + ")", (d, w) -> {
+                try {
+                    list.sort(Comparator.comparing(File::getName));
+                    File persistDir = new File(getFilesDir(), "frame_projects/" + curFinal.id);
+                    persistDir.mkdirs();
+                    FormulaEngine fe = new FormulaEngine();
+                    int added = 0;
+                    for (File f : list) {
+                        File dest = new File(persistDir, String.format(Locale.US, "%04d_%s", curFinal.clips.size()+1+added, f.getName()));
+                        try { copyFile(f, dest); } catch (Exception e) { dest = f; }
+                        String uri = Uri.fromFile(dest).toString();
+                        TimelineClip clip = new TimelineClip(uri, curFinal.clips.size()+1, fe.defaultFormula());
+                        clip.setDurationSeconds(curFinal.defaultDuration > 0 ? curFinal.defaultDuration : 3);
+                        curFinal.clips.add(clip);
+                        added++;
+                    }
+                    curFinal.renumber();
+                    store.save(curFinal);
+                    new AlertDialog.Builder(this).setTitle("Added")
+                        .setMessage(added + " frames added to " + curFinal.name + ". Open editor?")
+                        .setPositiveButton("Open Editor", (dd, ww) -> {
+                            finish();
+                            startActivity(new Intent(this, com.autoedit.MainActivity.class));
+                        })
+                        .setNegativeButton("OK", null).show();
+                } catch (Exception e) {
+                    toast("Add failed: " + e.getMessage());
+                }
+            }).show();
     }
 
     // ===================================================================== ZIP
@@ -865,6 +1054,15 @@ public class FrameExtractorActivity extends Activity {
             return fs.getAvailableBytes();
         } catch (Exception e) {
             return 0;
+        }
+    }
+
+    private static void copyFile(File src, File dst) throws IOException {
+        try (java.io.FileInputStream in = new java.io.FileInputStream(src);
+             java.io.FileOutputStream out = new java.io.FileOutputStream(dst)) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
         }
     }
 

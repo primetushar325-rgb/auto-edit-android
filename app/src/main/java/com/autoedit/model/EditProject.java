@@ -17,6 +17,8 @@ import java.util.*;
  * </pre>
  */
 public class EditProject {
+    public String id = java.util.UUID.randomUUID().toString();
+    public long lastModified = System.currentTimeMillis();
     public String name = "Untitled Auto Edit";
     public ArrayList<TimelineClip> clips = new ArrayList<>();
     public ArrayList<TextOverlay> texts = new ArrayList<>();
