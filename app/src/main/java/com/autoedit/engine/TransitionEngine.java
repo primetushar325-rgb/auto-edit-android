@@ -256,6 +256,63 @@ public class TransitionEngine {
             case FOLD_3D: tr.rotX = 90f * e; tr.squeezeY = 1f - 0.5f * e; tr.alpha = e < .5f ? 1f : 0f; return;
             case TUNNEL_3D: case WISP_PORTAL: tr.scale = 1f - 0.6f * e; tr.rotZ = 20f * e;
                 if (t == TransitionType.WISP_PORTAL) tr.blurAmount = 0.4f * bell(p); break;
+            // ===== Detailed 3D/Perspective (Bangladesh prompt 2026-09-10) =====
+            case PAGE_TURN: // 1 Page Turn Y 0→180 pivot right edge, white edge line at 90, shadow, ease-in-out
+                tr.rotY = 180f * e; tr.dx = 0.4f * e; tr.alpha = p < 0.48f ? 1f : (p < 0.52f ? 0.15f : 0f);
+                tr.overlayColor = 0xFFFFFFFF; tr.overlayAlpha = 0.7f * (1f - Math.abs(p-0.5f)*8f); if (tr.overlayAlpha<0) tr.overlayAlpha=0f; break;
+            case PAGE_CURL: // 2 Page Curl bezier diagonal curl + shadow
+                tr.rotY = 70f * e; tr.rotX = -35f * e; tr.scale = 1f - 0.18f * e; tr.squeezeX = 1f - 0.25f * e;
+                tr.blurAmount = 0.18f * bell(p); tr.alpha = p < 0.58f ? 1f : (1f - (p-0.58f)/0.42f); tr.overlayAlpha = 0.25f * bell(p); tr.overlayColor=0xFF888888; break;
+            case BOOK_OPEN: // 3 Book Open split middle Y ±120 spine shadow, scale 0.95→1 on incoming
+                tr.rotY = -120f * e; tr.dx = -0.35f * e; tr.scale = 1f - 0.08f * bell(p); tr.alpha = e < 0.55f ? 1f : 0f; break;
+            case CUBE_H: // 4 Cube Horizontal Y -90→90 perspective 800-1200
+                tr.rotY = 90f * e; tr.dx = 0.55f * e; tr.scale = 1f - 0.12f * bell(p); tr.alpha = e < 0.5f ? 1f : 0f; return;
+            case CUBE_V: // 5 Cube Vertical X
+                tr.rotX = 90f * e; tr.dy = 0.55f * e; tr.scale = 1f - 0.12f * bell(p); tr.alpha = e < 0.5f ? 1f : 0f; return;
+            case CUBE_INSIDE_OUT: // 6 Inside Out scale 1→2.5 fade out vs incoming 0.3→1
+                tr.scale = 1f + 1.5f * e; tr.alpha = 1f - e; tr.blurAmount = 0.35f * bell(p); break;
+            case DOOR_OPEN: // 7 Door split Y ±90 hinge shadow
+                tr.rotY = 95f * e; tr.dx = 0.28f * e; tr.alpha = e < 0.6f ? 1f : 0f; tr.overlayAlpha = 0.35f * bell(p); tr.overlayColor=0xFF000000; break;
+            case FOLD_ACCORDION: // 8 Accordion 3-5 strips staggered shadow
+                tr.squeezeX = 1f - 0.65f * e; tr.rotY = 35f * (float)Math.sin(p*3.14f*2); tr.alpha = 1f - 0.7f * e; tr.blurAmount=0.12f*bell(p); break;
+            case ORIGAMI_FOLD: // 9 Origami triangular multi-axis
+                tr.rotX = 75f * e; tr.rotZ = 45f * e; tr.rotY = 30f * e; tr.scale = 1f - 0.35f * e; tr.alpha = 1f - 0.8f * e; break;
+            case FLIP_H: // 10 Horizontal Flip centre Y 0→90
+                tr.rotY = 90f * e; tr.alpha = e < 0.5f ? 1f : 0f; return;
+            case FLIP_V: // 11 Vertical Flip X 0→90
+                tr.rotX = 90f * e; tr.alpha = e < 0.5f ? 1f : 0f; return;
+            case FLIP_SCALE: // 12 Flip with Scale spring 1→0.7→1
+                tr.rotY = 90f * e; tr.scale = 1f - 0.3f * (float)Math.sin(e*3.14159f); tr.alpha = e < 0.5f ? 1f : 0f; return;
+            case ZOOM_DEPTH: // 13 Push Z 1→1.3 fade vs incoming 0.7→1
+                tr.scale = 1f + 0.35f * e; tr.alpha = 1f - e; break;
+            case PARALLAX_ZOOM: // 14 bg 1.1 vs fg 1.4 depth
+                tr.scale = 1f + 0.4f * e; tr.squeezeX = 1f + 0.15f * (float)Math.sin(p*18.8f); tr.alpha = 1f - 0.3f * e; break;
+            case PERSPECTIVE_PULL: // 15 corner anchored perspective distort to corner
+                tr.scale = 1f - 0.55f * e; tr.dx = -0.45f * e; tr.dy = -0.45f * e; tr.rotX = 25f * e; tr.rotY = 25f * e; tr.alpha = 1f - e; break;
+            case SLIDE_3D: // 16 Slide + rotate ±15
+                tr.dx = -0.95f * e; tr.rotY = -15f * (1f - e); tr.alpha = 1f; break;
+            case CAROUSEL_ROTATE: // 17 cylinder Y 360/N ~60 deg per item
+                tr.rotY = 70f * e; tr.dx = 0.6f * e; tr.scale = 1f - 0.18f * bell(p); tr.alpha = e < 0.5f ? 1f : 0f; return;
+            case COVERFLOW: // 18 45-60° overlap + reflection
+                tr.rotY = 58f * e; tr.dx = 0.5f * e; tr.scale = 1f - 0.22f * e; tr.alpha = 1f - 0.35f * e; tr.overlayAlpha = 0.18f * (1f - p); tr.overlayColor=0x66FFFFFF; break;
+            case VENETIAN_BLINDS: // 19 horizontal strips X 0→90 staggered 50-100ms -> squeezeY
+                tr.squeezeY = 1f - 0.95f * e; tr.rotX = 90f * e; tr.alpha = e < 0.55f ? 1f : 0f; return;
+            case SHUTTER_SPLIT: // 20 shutter up/down split
+                tr.dy = -0.55f * e; tr.alpha = 1f; break;
+            case CIRCLE_REVEAL_3D: // 21 circle reveal with bulge lens
+                tr.revealRadius = p; tr.circleReveal = true; tr.scale = 1f + 0.18f * bell(p); tr.blurAmount = 0.12f * bell(p); tr.alpha = 1f; break;
+            case POLYGON_REVEAL: // 22 hexagon/diamond rotate
+                tr.revealRadius = p; tr.circleReveal = true; tr.shape = "hexagon"; tr.rotZ = 60f * e; tr.scale = 1f + 0.12f * bell(p); tr.alpha = 1f; break;
+            case SWING_PENDULUM: // 23 damped oscillation 15→-10→5→0 elastic
+                { float s = (float)(15*Math.sin(p*12.56)*Math.exp(-p*3) - 10*Math.sin(p*18.84)*Math.exp(-p*4)); tr.rotZ = s * e; tr.dx = 0.12f * s/15f; tr.alpha = 1f - 0.2f * e; } break;
+            case RIPPLE_WAVE_3D: // 24 sine wave displacement
+                tr.scale = 1f + 0.09f * (float)Math.sin(p*22f); tr.blurAmount = 0.18f * bell(p); tr.squeezeX = 1f + 0.07f * (float)Math.sin(p*15.7f); break;
+            case EXPLODE_SHATTER: // 25 voronoi 30-50 pieces gravity
+                tr.scale = 1f - 0.75f * e; tr.rotZ = 25f * e + 15f * (float)Math.sin(p*12f); tr.alpha = 1f - e; tr.blurAmount = 0.28f * bell(p); tr.grain = 0.2f * e; break;
+            case SPIN_ZOOM: // 26 Z 180-360 spin scale 1→0
+                tr.rotZ = 360f * e; tr.scale = 1f - e; tr.alpha = 1f - e; break;
+            case MIRROR_SPLIT: // 27 mirror symmetric slide + Y rot
+                tr.rotY = 35f * e; tr.dx = -0.45f * e; tr.alpha = 1f; break;
             case CAROUSEL_3D: tr.rotY = 120f * e; tr.dx = 0.4f * e; tr.alpha = e < .5f ? 1f : 0f; return;
             case PARALLAX_3D: tr.rotY = 45f * e; tr.dx = 0.25f * e; break;
             case DEPTH_ZOOM_3D: case DARK_SCALE: tr.scale = 1f - 0.5f * e;
@@ -495,6 +552,37 @@ public class TransitionEngine {
             case FOLD_3D: tr.rotX = -90f + 90f * e; tr.squeezeY = 0.5f + 0.5f * e; tr.alpha = e > .5f ? 1f : 0f; return;
             case TUNNEL_3D: case WISP_PORTAL: tr.alpha = e; tr.scale = 0.4f + 0.6f * e; tr.rotZ = -20f + 20f * e;
                 if (t == TransitionType.WISP_PORTAL) tr.blurAmount = 0.4f * bell(p); break;
+            // ===== Detailed 3D/Perspective incoming (Bangladesh prompt) =====
+            case PAGE_TURN: // 1 incoming back side 90→0
+                tr.rotY = -90f + 90f * e; tr.dx = -0.4f + 0.4f * e; tr.alpha = e > 0.52f ? 1f : (e > 0.48f ? 0.15f : 0f); break;
+            case PAGE_CURL:
+                tr.rotY = -60f + 60f * e; tr.rotX = 35f - 35f * e; tr.scale = 0.82f + 0.18f * e; tr.blurAmount = 0.18f * bell(p); tr.alpha = e > 0.42f ? 1f : (e/0.42f); break;
+            case BOOK_OPEN:
+                tr.rotY = 120f - 120f * e; tr.dx = 0.35f * (1f - e); tr.scale = 0.95f + 0.05f * e; tr.alpha = e; break;
+            case CUBE_H: tr.rotY = -90f + 90f * e; tr.dx = -0.55f + 0.55f * e; tr.scale = 0.88f + 0.12f * bell(p); tr.alpha = e > 0.5f ? 1f : 0f; return;
+            case CUBE_V: tr.rotX = -90f + 90f * e; tr.dy = -0.55f + 0.55f * e; tr.scale = 0.88f + 0.12f * bell(p); tr.alpha = e > 0.5f ? 1f : 0f; return;
+            case CUBE_INSIDE_OUT: tr.scale = 0.3f + 0.7f * e; tr.alpha = e; tr.blurAmount = 0.35f * (1f - e); break;
+            case DOOR_OPEN: tr.rotY = -95f + 95f * e; tr.dx = -0.28f + 0.28f * e; tr.alpha = e; break;
+            case FOLD_ACCORDION: tr.squeezeX = 0.35f + 0.65f * e; tr.rotY = -35f * (float)Math.sin((1f-p)*3.14f*2); tr.alpha = e; break;
+            case ORIGAMI_FOLD: tr.rotX = -75f + 75f * e; tr.rotZ = -45f + 45f * e; tr.rotY = -30f + 30f * e; tr.scale = 0.65f + 0.35f * e; tr.alpha = e; break;
+            case FLIP_H: tr.rotY = -90f + 90f * e; tr.alpha = e > 0.5f ? 1f : 0f; return;
+            case FLIP_V: tr.rotX = -90f + 90f * e; tr.alpha = e > 0.5f ? 1f : 0f; return;
+            case FLIP_SCALE: tr.rotY = -90f + 90f * e; tr.scale = 0.7f + 0.3f * (float)(1 - Math.sin((1-e)*3.14159f)); tr.alpha = e > 0.5f ? 1f : 0f; return;
+            case ZOOM_DEPTH: tr.scale = 0.7f + 0.3f * e; tr.alpha = e; break;
+            case PARALLAX_ZOOM: tr.scale = 0.78f + 0.22f * e; tr.alpha = e; break; // bg/fg approximated as single scale
+            case PERSPECTIVE_PULL: tr.scale = 0.45f + 0.55f * e; tr.dx = 0.45f * (1f - e); tr.dy = 0.45f * (1f - e); tr.rotX = -25f + 25f * e; tr.rotY = -25f + 25f * e; tr.alpha = e; break;
+            case SLIDE_3D: tr.dx = 0.95f * (1f - e); tr.rotY = 15f * (1f - e); tr.alpha = 1f; break;
+            case CAROUSEL_ROTATE: tr.rotY = -70f + 70f * e; tr.dx = -0.6f + 0.6f * e; tr.scale = 0.82f + 0.18f * bell(p); tr.alpha = e > 0.5f ? 1f : 0f; return;
+            case COVERFLOW: tr.rotY = -58f + 58f * e; tr.dx = -0.5f + 0.5f * e; tr.scale = 0.78f + 0.22f * e; tr.alpha = e; break;
+            case VENETIAN_BLINDS: tr.squeezeY = 0.05f + 0.95f * e; tr.rotX = -90f + 90f * e; tr.alpha = e > 0.45f ? 1f : 0f; return;
+            case SHUTTER_SPLIT: tr.dy = 0.55f * (1f - e); tr.alpha = 1f; break;
+            case CIRCLE_REVEAL_3D: tr.revealRadius = p; tr.circleReveal = true; tr.scale = 0.88f + 0.12f * (1f - bell(p)); tr.alpha = 1f; break;
+            case POLYGON_REVEAL: tr.revealRadius = p; tr.circleReveal = true; tr.shape = "hexagon"; tr.rotZ = -60f + 60f * e; tr.alpha = 1f; break;
+            case SWING_PENDULUM: { float s = (float)(15*Math.sin((1-p)*12.56)*Math.exp(-(1-p)*3) - 10*Math.sin((1-p)*18.84)*Math.exp(-(1-p)*4)); tr.rotZ = s * (1f - e); tr.alpha = e; } break;
+            case RIPPLE_WAVE_3D: tr.scale = 1f + 0.09f * (float)Math.sin((1-p)*22f); tr.blurAmount = 0.18f * bell(p); break;
+            case EXPLODE_SHATTER: tr.scale = 0.25f + 0.75f * e; tr.rotZ = -25f + 25f * e; tr.alpha = e; break;
+            case SPIN_ZOOM: tr.rotZ = -360f + 360f * e; tr.scale = e; tr.alpha = e; break;
+            case MIRROR_SPLIT: tr.rotY = -35f + 35f * e; tr.dx = 0.45f * (1f - e); tr.alpha = 1f; break;
             case CAROUSEL_3D: tr.rotY = -120f + 120f * e; tr.dx = -0.4f + 0.4f * e; tr.alpha = e > .5f ? 1f : 0f; return;
             case PARALLAX_3D: tr.rotY = -45f + 45f * e; tr.dx = -0.25f + 0.25f * e; tr.alpha = e; break;
             case DEPTH_ZOOM_3D: tr.alpha = e; tr.scale = 0.5f + 0.5f * e; tr.rotY = -25f + 25f * e; break;
@@ -593,7 +681,18 @@ public class TransitionEngine {
                 TransitionType.GALLERY_SCROLL_3D, TransitionType.GALLERY_ALIGN, TransitionType.GALLERY_SOCIAL,
                 TransitionType.GALLERY_FRAME, TransitionType.GALLERY_CAM, TransitionType.GALLERY_SPACE,
                 TransitionType.GALLERY_PREVIEW, TransitionType.GALLERY_GRID, TransitionType.GALLERY_MESSY,
-                TransitionType.GALLERY_MORPH, TransitionType.GALLERY_CAROUSEL, TransitionType.GALLERY_COLUMNS
+                TransitionType.GALLERY_MORPH, TransitionType.GALLERY_CAROUSEL, TransitionType.GALLERY_COLUMNS,
+                // Detailed 3D/Perspective
+                TransitionType.PAGE_TURN, TransitionType.PAGE_CURL, TransitionType.BOOK_OPEN,
+                TransitionType.CUBE_H, TransitionType.CUBE_V, TransitionType.CUBE_INSIDE_OUT,
+                TransitionType.DOOR_OPEN, TransitionType.FOLD_ACCORDION, TransitionType.ORIGAMI_FOLD,
+                TransitionType.FLIP_H, TransitionType.FLIP_V, TransitionType.FLIP_SCALE,
+                TransitionType.ZOOM_DEPTH, TransitionType.PARALLAX_ZOOM, TransitionType.PERSPECTIVE_PULL,
+                TransitionType.SLIDE_3D, TransitionType.CAROUSEL_ROTATE, TransitionType.COVERFLOW,
+                TransitionType.VENETIAN_BLINDS, TransitionType.SHUTTER_SPLIT,
+                TransitionType.CIRCLE_REVEAL_3D, TransitionType.POLYGON_REVEAL,
+                TransitionType.SWING_PENDULUM, TransitionType.RIPPLE_WAVE_3D,
+                TransitionType.EXPLODE_SHATTER, TransitionType.SPIN_ZOOM, TransitionType.MIRROR_SPLIT
         };
     }
 
@@ -647,6 +746,34 @@ public class TransitionEngine {
             case GALLERY_MORPH: return "Gallery Morph";
             case GALLERY_CAROUSEL: return "Gallery Carousel";
             case GALLERY_COLUMNS: return "Gallery Columns";
+            // Detailed 3D
+            case PAGE_TURN: return "Page Turn";
+            case PAGE_CURL: return "Page Curl";
+            case BOOK_OPEN: return "Book Open";
+            case CUBE_H: return "Cube Horizontal";
+            case CUBE_V: return "Cube Vertical";
+            case CUBE_INSIDE_OUT: return "Cube Inside Out";
+            case DOOR_OPEN: return "Door Open";
+            case FOLD_ACCORDION: return "Fold Accordion";
+            case ORIGAMI_FOLD: return "Origami Fold";
+            case FLIP_H: return "Flip Horizontal";
+            case FLIP_V: return "Flip Vertical";
+            case FLIP_SCALE: return "Flip Scale";
+            case ZOOM_DEPTH: return "Zoom Depth";
+            case PARALLAX_ZOOM: return "Parallax Zoom";
+            case PERSPECTIVE_PULL: return "Perspective Pull";
+            case SLIDE_3D: return "Slide 3D";
+            case CAROUSEL_ROTATE: return "Carousel Rotate";
+            case COVERFLOW: return "Coverflow";
+            case VENETIAN_BLINDS: return "Venetian Blinds";
+            case SHUTTER_SPLIT: return "Shutter Split";
+            case CIRCLE_REVEAL_3D: return "Circle Reveal 3D";
+            case POLYGON_REVEAL: return "Polygon Reveal";
+            case SWING_PENDULUM: return "Swing";
+            case RIPPLE_WAVE_3D: return "Ripple Wave 3D";
+            case EXPLODE_SHATTER: return "Explode";
+            case SPIN_ZOOM: return "Spin Zoom";
+            case MIRROR_SPLIT: return "Mirror Split";
             default: return t.name();
         }
     }

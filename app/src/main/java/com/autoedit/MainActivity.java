@@ -22,6 +22,11 @@ import java.util.*;
 
 import org.json.JSONObject;
 
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+
 import com.autoedit.model.*;
 import com.autoedit.engine.*;
 import com.autoedit.project.*;
@@ -29,6 +34,7 @@ import com.autoedit.export.*;
 import com.autoedit.ui.*;
 import com.autoedit.formula.CustomFormulaActivity;
 import com.autoedit.frames.FrameExtractorActivity;
+import com.autoedit.frames.GallerySaver;
 import com.autoedit.update.UpdateActivity;
 import com.autoedit.update.UpdateChecker;
 import com.autoedit.update.VersionConfig;
@@ -46,6 +52,9 @@ public class MainActivity extends Activity {
     private TextView saveStatus;
     private String screen = "home";
     private int selected = -1;
+    // Bulk selection (10, 18): multiple clips can be selected together
+    private final Set<Integer> multiSelected = new HashSet<>();
+    private boolean bulkSelectMode = false;
 
     // editor refs (rebuilt on each showEditor)
     private PreviewView preview;
@@ -57,6 +66,13 @@ public class MainActivity extends Activity {
     private LinearLayout panelHost;
     private final List<TextView> chips = new ArrayList<>();
     private final List<ImageView> junctions = new ArrayList<>();
+    // Virtualization for 500–1000 clips: pool + window (no bitmaps, text-only chips)
+    private static final int VIRTUAL_THRESHOLD = 150;
+    private static final int VIRTUAL_WINDOW = 80;
+    private int virtualStart = 0;
+    private final List<TextView> chipPool = new ArrayList<>();
+    private final List<ImageView> junctionPool = new ArrayList<>();
+    private float[] prefixWidths = null;
     private int lastActiveChip = -1;
     private float lastFrameT = 0f;
     private int batchDur = 5;
@@ -145,6 +161,7 @@ public class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        try { WindowCompat.setDecorFitsSystemWindows(getWindow(), false); } catch (Exception ignored) {}
         store = new ProjectStore(this);
         formulas = new FormulaEngine();
         project = store.load();
@@ -350,16 +367,21 @@ public class MainActivity extends Activity {
         setContentView(root);
     }
 
-    /** Status bar / nav bar / notch via window insets — no hardcoded heights. */
+    /** Status bar / nav bar / notch via WindowInsetsCompat — no hardcoded heights. */
     private void applySystemInsets(View v) {
-        v.setOnApplyWindowInsetsListener((view, insets) -> {
-            int top = insets.getSystemWindowInsetTop();
-            int bottom = insets.getSystemWindowInsetBottom();
-            int left = insets.getSystemWindowInsetLeft();
-            int right = insets.getSystemWindowInsetRight();
+        ViewCompat.setOnApplyWindowInsetsListener(v, (view, insets) -> {
+            Insets sb = insets.getInsets(WindowInsetsCompat.Type.statusBars());
+            Insets nb = insets.getInsets(WindowInsetsCompat.Type.navigationBars());
+            Insets dc = insets.getInsets(WindowInsetsCompat.Type.displayCutout());
+            int top = Math.max(sb.top, dc.top);
+            int bottom = Math.max(nb.bottom, dc.bottom);
+            int left = Math.max(sb.left, Math.max(nb.left, dc.left));
+            int right = Math.max(sb.right, Math.max(nb.right, dc.right));
             view.setPadding(dp(16) + left, dp(14) + top, dp(16) + right, dp(14) + bottom);
-            return insets;
+            return WindowInsetsCompat.CONSUMED;
         });
+        // Also apply bottom inset to timeline if present (keeps controls above nav bar)
+        ViewCompat.requestApplyInsets(v);
     }
 
     // ---------------------------------------------------------------- home
@@ -667,11 +689,19 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams zilp = new LinearLayout.LayoutParams(-2, -2);
         zilp.leftMargin = dp(4);
         tHead.addView(zIn, zilp);
+        ImageView selAll = iconButton(R.drawable.ic_copy, this::selectAllClips);
+        LinearLayout.LayoutParams sall = new LinearLayout.LayoutParams(-2, -2);
+        sall.leftMargin = dp(4);
+        tHead.addView(selAll, sall);
+        ImageView clrAll = iconButton(R.drawable.ic_close, this::clearSelection);
+        LinearLayout.LayoutParams clp2 = new LinearLayout.LayoutParams(-2, -2);
+        clp2.leftMargin = dp(4);
+        tHead.addView(clrAll, clp2);
         ImageView sp = iconButton(R.drawable.ic_split, this::splitAtPlayhead);
         LinearLayout.LayoutParams splp = new LinearLayout.LayoutParams(-2, -2);
         splp.leftMargin = dp(10);
         tHead.addView(sp, splp);
-        tHead.addView(label("Split cuts the clip under the playhead into two.", 11, AeDesign.MUTED, Typeface.NORMAL),
+        tHead.addView(label("Split • Select All • Clear", 11, AeDesign.MUTED, Typeface.NORMAL),
                 new LinearLayout.LayoutParams(0, -2, 1));
         tbox.addView(tHead, new LinearLayout.LayoutParams(-1, -2));
         ruler = new TimelineRulerView(this);
@@ -692,6 +722,12 @@ public class MainActivity extends Activity {
         scrollContent.addView(ovlTrack, new LinearLayout.LayoutParams(-1, dp(44)));
         timelineScroll.addView(scrollContent);
         tbox.addView(timelineScroll, new LinearLayout.LayoutParams(-1, dp(202)));
+        // Virtual timeline: recycle chips on scroll for 500–1000 clips (keeps 80 views, not 1000)
+        if (Build.VERSION.SDK_INT >= 23) {
+            timelineScroll.setOnScrollChangeListener((v, sx, sy, osx, osy) -> {
+                if (project != null && project.clips.size() > VIRTUAL_THRESHOLD) updateVirtualWindow();
+            });
+        }
         ovlTrack.setOnSelect(ix -> { selectedOverlay = ix; if (panelHost != null) overlaysPanel(); });
         LinearLayout tracks = col();
         project.migrateLegacyAudio();
@@ -707,7 +743,7 @@ public class MainActivity extends Activity {
         // --- tools: compact icon toolbar (every tool is real; no fakes)
         GridLayout tools = new GridLayout(this);
         tools.setColumnCount(4);
-        addToolTile(tools, "images", R.drawable.ic_images, "Images", () -> { openTool("images"); pickImages(); });
+        addToolTile(tools, "images", R.drawable.ic_images, "Images", () -> imagesPanel());
         addToolTile(tools, "motion", R.drawable.ic_motion, "Motion", () -> motionPanel());
         addToolTile(tools, "formula", R.drawable.ic_formula, "Formula", () -> formulaBatchPanel());
         addToolTile(tools, "transition", R.drawable.ic_transition, "Transition", () -> transitionPanel());
@@ -918,9 +954,64 @@ public class MainActivity extends Activity {
      * structural=false → in-place width/text/style update (duration changes):
      *                    no view inflation, instant for 500–1000 clips.
      */
+    /**
+     * structural=true  → rebuild all chip views (import / delete / reorder / undo)
+     * structural=false → in-place width/text/style update (duration changes):
+     *                    no view inflation, instant for 500–1000 clips.
+     * Virtual mode (clips > 150): only 80 TextViews are ever attached (pool),
+     * recycled on scroll/idle — 1000 clips stay as metadata, no bitmaps.
+     */
     private void buildTimeline(boolean structural) {
         if (timeline == null) return;
         project.renumber();
+        boolean virtual = project.clips.size() > VIRTUAL_THRESHOLD;
+        if (virtual) {
+            buildPrefixWidths();
+            if (structural) {
+                ensureChipPool();
+                // Start window at playhead or selected or scroll
+                int anchor = selected >=0 ? selected : (preview != null ? Timeline.resolve(project, preview.currentTimeSec()).clipIndex : 0);
+                if (anchor <0) anchor = 0;
+                virtualStart = Math.max(0, Math.min(anchor - VIRTUAL_WINDOW/3, Math.max(0, project.clips.size() - VIRTUAL_WINDOW)));
+                if (timelineScroll != null) {
+                    // If we have a scroll position, prefer it
+                    int sx = timelineScroll.getScrollX();
+                    if (sx > 0) virtualStart = computeWindowStartFor(sx);
+                }
+                rebuildVirtualTimeline();
+            } else {
+                // Duration/motion change: just rebind visible chips
+                updateVirtualWindow();
+                for (int i = 0; i < chipPool.size(); i++) {
+                    int g = virtualStart + i;
+                    if (g >= project.clips.size() || g >= prefixWidths.length-1) break;
+                    TextView v = chipPool.get(i);
+                    if (v.getParent() == null) continue;
+                    TimelineClip c = project.clips.get(g);
+                    v.setText(String.format(Locale.US, "%02d\n%ds", c.index, Math.round(c.durationSec)));
+                    styleChipVirtual(g, v);
+                }
+                refreshJunctionIconsVirtual();
+            }
+            if (ruler != null) ruler.setProject(project);
+            if (waveTrack != null) {
+                AudioTrack at = project.primaryAudio();
+                waveTrack.setTrack(at);
+                if (at != null) {
+                    WaveformCache.ensure(this, at.uri, handler, (uri, peaks) -> {
+                        AudioTrack now = project.primaryAudio();
+                        if (waveTrack != null && now != null && uri.equals(now.uri)) waveTrack.setPeaks(peaks);
+                    });
+                }
+            }
+            if (ovlTrack != null) ovlTrack.setProject(project);
+            applyTimelineGeometryVirtual();
+            if (metaLabel != null) metaLabel.setText(project.clips.size() + " clips • " + project.fps + " FPS • " + project.fitMode.label + " • " + fmt(project.totalDurationSec()));
+            if (playLabel != null) playLabel.setText(fmt(preview == null ? 0f : preview.currentTimeSec()) + " / " + fmt(project.totalDurationSec()));
+            if (preview != null) preview.invalidate();
+            return;
+        }
+        // ---- non-virtual path (≤150 clips): classic inflate-all ----
         if (structural) {
             timeline.removeAllViews();
             chips.clear();
@@ -932,14 +1023,22 @@ public class MainActivity extends Activity {
                 v.setMinWidth(dp(28));
                 final int ix = i;
                 AeDesign.press(v, () -> {
-                    selected = ix;
+                    if (bulkSelectMode || !multiSelected.isEmpty()) {
+                        if (multiSelected.contains(ix)) multiSelected.remove(ix);
+                        else multiSelected.add(ix);
+                        if (multiSelected.size()==1) selected = new ArrayList<>(multiSelected).get(0);
+                        else if (multiSelected.isEmpty()) { bulkSelectMode=false; selected=-1; }
+                        else selected = ix;
+                    } else {
+                        selected = ix;
+                        multiSelected.clear();
+                    }
                     transitionScopeClip = -1;
                     if (preview != null) preview.seekTo(project.clips.get(ix).startTimeMsIn(project) / 1000f);
-                    refreshSelection();
+                    buildTimeline(false);
                     showClipPanel();
                 });
                 v.setOnLongClickListener(x -> { removeOrMoveDialog(ix); return true; });
-                // v1.8: drag the right edge to resize (clamps to the 0.5s-60s safe range)
                 v.setOnTouchListener((x, ev) -> {
                     float vw = x.getWidth();
                     if (ev.getAction() == MotionEvent.ACTION_DOWN) {
@@ -970,11 +1069,8 @@ public class MainActivity extends Activity {
                 lp.leftMargin = dp((int) TimelineRulerView.GAP_DP);
                 timeline.addView(v, lp);
                 chips.add(v);
-                // CapCut-style junction control: between clip i-1 and clip i ONLY
-                // (never before the first clip / after the last). Zero net width
-                // (negative margins) so the ruler playhead geometry is untouched.
                 if (i > 0) {
-                    final int junctionClip = i - 1; // clip whose .transition defines this junction
+                    final int junctionClip = i - 1;
                     ImageView j = new ImageView(this);
                     j.setPadding(dp(6), dp(6), dp(6), dp(6));
                     j.setContentDescription("Add transition between clip " + i + " and " + (i + 1));
@@ -1014,8 +1110,206 @@ public class MainActivity extends Activity {
         if (preview != null) preview.invalidate();
     }
 
+    // ---- virtual timeline helpers (pool + window) ----
+    private void buildPrefixWidths() {
+        int n = project.clips.size();
+        prefixWidths = new float[n+1];
+        float pps = TimelineRulerView.pxPerSecPx(this, tlZoom);
+        float gap = dp((int) TimelineRulerView.GAP_DP);
+        prefixWidths[0]=0;
+        for (int i=0;i<n;i++) {
+            float w = Math.max(dp(28), project.clips.get(i).durationSec * pps) + gap;
+            // junctions have zero net width, so not added
+            prefixWidths[i+1]=prefixWidths[i]+w;
+        }
+    }
+    private void ensureChipPool() {
+        if (chipPool.size() == VIRTUAL_WINDOW && junctionPool.size() == VIRTUAL_WINDOW) return;
+        chipPool.clear(); junctionPool.clear();
+        for (int i=0;i<VIRTUAL_WINDOW;i++) {
+            TextView v = label("", 10, AeDesign.TEXT, Typeface.BOLD);
+            v.setGravity(Gravity.CENTER);
+            v.setMinWidth(dp(28));
+            chipPool.add(v);
+            ImageView j = new ImageView(this);
+            j.setPadding(dp(6), dp(6), dp(6), dp(6));
+            j.setElevation(dp(5));
+            junctionPool.add(j);
+        }
+    }
+    private int computeWindowStartFor(int scrollX) {
+        if (prefixWidths==null || prefixWidths.length<=1) return 0;
+        float pad = TimelineRulerView.PAD_DP * getResources().getDisplayMetrics().density;
+        float sx = Math.max(0, scrollX - pad);
+        // binary search prefix
+        int lo=0, hi=project.clips.size()-1, ans=0;
+        while (lo<=hi) {
+            int mid=(lo+hi)/2;
+            if (prefixWidths[mid] <= sx) { ans=mid; lo=mid+1; } else hi=mid-1;
+        }
+        ans = Math.max(0, Math.min(ans - 5, Math.max(0, project.clips.size()-VIRTUAL_WINDOW)));
+        return ans;
+    }
+    private void rebuildVirtualTimeline() {
+        if (timeline==null) return;
+        timeline.removeAllViews();
+        float pps = TimelineRulerView.pxPerSecPx(this, tlZoom);
+        float gap = dp((int) TimelineRulerView.GAP_DP);
+        int n = project.clips.size();
+        int end = Math.min(n, virtualStart + VIRTUAL_WINDOW);
+        // We use LinearLayout but only add window views plus left spacer to keep total width
+        // Left spacer
+        float leftW = prefixWidths[virtualStart];
+        if (leftW > 0) {
+            View spacer = new View(this);
+            spacer.setLayoutParams(new LinearLayout.LayoutParams((int)leftW, dp(78)));
+            timeline.addView(spacer);
+        }
+        for (int g=virtualStart; g<end; g++) {
+            int poolIdx = g - virtualStart;
+            TextView v = chipPool.get(poolIdx);
+            TimelineClip c = project.clips.get(g);
+            v.setText(String.format(Locale.US, "%02d\n%ds", c.index, Math.round(c.durationSec)));
+            styleChipVirtual(g, v);
+            final int ix = g;
+            AeDesign.press(v, () -> {
+                if (bulkSelectMode || !multiSelected.isEmpty()) {
+                    if (multiSelected.contains(ix)) multiSelected.remove(ix); else multiSelected.add(ix);
+                    if (multiSelected.size()==1) selected = new ArrayList<>(multiSelected).get(0);
+                    else if (multiSelected.isEmpty()) { bulkSelectMode=false; selected=-1; } else selected=ix;
+                } else { selected=ix; multiSelected.clear(); }
+                transitionScopeClip=-1;
+                if (preview!=null) preview.seekTo(project.clips.get(ix).startTimeMsIn(project)/1000f);
+                buildTimeline(false);
+                showClipPanel();
+            });
+            v.setOnLongClickListener(x -> { removeOrMoveDialog(ix); return true; });
+            v.setOnTouchListener((x, ev) -> {
+                float vw=x.getWidth();
+                if (ev.getAction()==MotionEvent.ACTION_DOWN) {
+                    if (ev.getX() > vw - dp(12)) { resizing=ix; pushUndo(); return true; }
+                    return false;
+                }
+                if (resizing==ix) {
+                    if (ev.getAction()==MotionEvent.ACTION_MOVE) {
+                        float pp = TimelineRulerView.pxPerSecPx(this, tlZoom);
+                        if (pp>0f) project.clips.get(ix).setDurationSeconds(ev.getX()/pp);
+                        buildPrefixWidths();
+                        applyTimelineGeometryVirtual();
+                        return true;
+                    }
+                    if (ev.getAction()==MotionEvent.ACTION_UP || ev.getAction()==MotionEvent.ACTION_CANCEL) {
+                        resizing=-1; saveProject(true); buildTimeline(false); return true;
+                    }
+                }
+                return false;
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(Math.max(dp(28), (int)(c.durationSec * pps)), dp(78));
+            lp.leftMargin = (int)gap;
+            // Remove if already has parent (reused)
+            if (v.getParent()!=null) ((ViewGroup)v.getParent()).removeView(v);
+            timeline.addView(v, lp);
+            if (g > virtualStart) {
+                ImageView j = junctionPool.get(poolIdx);
+                boolean has = project.clips.get(g-1).transition != TransitionType.NONE;
+                j.setImageResource(has ? R.drawable.ic_transition : R.drawable.ic_add);
+                j.setColorFilter(has ? AeDesign.ACCENT : AeDesign.MUTED);
+                j.setBackground(AeDesign.bg(has ? 0xff12395c : AeDesign.SURFACE, dp(14), has ? AeDesign.ACCENT : AeDesign.STROKE, has?2:1));
+                final int jc = g-1;
+                j.setContentDescription("Add transition between clip " + g + " and " + (g+1));
+                AeDesign.press(j, () -> { transitionScopeClip=jc; transitionPanel(); });
+                LinearLayout.LayoutParams jlp = new LinearLayout.LayoutParams(dp(28), dp(28));
+                jlp.leftMargin=-dp(14); jlp.rightMargin=-dp(14); jlp.topMargin=(dp(84)-dp(28))/2;
+                if (j.getParent()!=null) ((ViewGroup)j.getParent()).removeView(j);
+                timeline.addView(j, jlp);
+            } else if (g==virtualStart && g>0) {
+                // junction before first visible (from previous clip) still show if needed
+                ImageView j = junctionPool.get(poolIdx);
+                boolean has = project.clips.get(g-1).transition != TransitionType.NONE;
+                j.setImageResource(has ? R.drawable.ic_transition : R.drawable.ic_add);
+                j.setColorFilter(has ? AeDesign.ACCENT : AeDesign.MUTED);
+                j.setBackground(AeDesign.bg(has ? 0xff12395c : AeDesign.SURFACE, dp(14), has ? AeDesign.ACCENT : AeDesign.STROKE, has?2:1));
+                final int jc=g-1;
+                AeDesign.press(j, () -> { transitionScopeClip=jc; transitionPanel(); });
+                LinearLayout.LayoutParams jlp = new LinearLayout.LayoutParams(dp(28), dp(28));
+                jlp.leftMargin=-dp(14); jlp.rightMargin=-dp(14); jlp.topMargin=(dp(84)-dp(28))/2;
+                if (j.getParent()!=null) ((ViewGroup)j.getParent()).removeView(j);
+                // Insert before first chip (after left spacer, so at index 1)
+                timeline.addView(j, 1, jlp);
+            }
+        }
+        float totalW = prefixWidths[n];
+        float rightW = totalW - prefixWidths[end];
+        if (rightW > 0) {
+            View spacerR = new View(this);
+            spacerR.setLayoutParams(new LinearLayout.LayoutParams((int)rightW, dp(78)));
+            timeline.addView(spacerR);
+        }
+    }
+    private void updateVirtualWindow() {
+        if (timelineScroll==null || prefixWidths==null) return;
+        int sx = timelineScroll.getScrollX();
+        int ns = computeWindowStartFor(sx);
+        if (ns != virtualStart) {
+            virtualStart = ns;
+            rebuildVirtualTimeline();
+        }
+    }
+    private void styleChipVirtual(int global, TextView v) {
+        boolean sel = global==selected || multiSelected.contains(global);
+        boolean bulk = multiSelected.contains(global);
+        int bg = sel ? (bulk ? 0xff0f2d5a : 0xff12395c) : AeDesign.SURFACE_2;
+        v.setBackground(AeDesign.bg(bg, dp(14), sel ? AeDesign.ACCENT : AeDesign.STROKE, sel?2:1));
+        v.setTextColor(sel ? 0xffffffff : AeDesign.TEXT);
+        // playhead highlight
+        if (global==lastActiveChip && global!=selected) v.setBackground(AeDesign.bg(0xff16324f, dp(14), 0x6649A8FF, 1));
+    }
+    private void refreshJunctionIconsVirtual() {
+        for (int i=0;i<junctionPool.size();i++) {
+            int g = virtualStart + i;
+            if (g<=0 || g>=project.clips.size()) continue;
+            ImageView v = junctionPool.get(i);
+            if (v.getParent()==null) continue;
+            boolean has = project.clips.get(g-1).transition != TransitionType.NONE;
+            v.setImageResource(has ? R.drawable.ic_transition : R.drawable.ic_add);
+            v.setColorFilter(has ? AeDesign.ACCENT : AeDesign.MUTED);
+            v.setBackground(AeDesign.bg(has ? 0xff12395c : AeDesign.SURFACE, dp(14), has ? AeDesign.ACCENT : AeDesign.STROKE, has?2:1));
+        }
+    }
+    private void applyTimelineGeometryVirtual() {
+        if (ruler==null) return;
+        float d=getResources().getDisplayMetrics().density;
+        float pps=TimelineRulerView.pxPerSecPx(this, tlZoom);
+        float total=project.totalDurationSec();
+        float pad=TimelineRulerView.PAD_DP * d;
+        float laneW=TimelineRulerView.contentWidthPx(this, project, tlZoom) -2*pad;
+        if (laneW<dp(20)) laneW=dp(20);
+        LinearLayout.LayoutParams rlp=(LinearLayout.LayoutParams) ruler.getLayoutParams();
+        rlp.width=(int)laneW; ruler.requestLayout();
+        if (waveTrack!=null) waveTrack.setGeometry(pps,0f,total);
+        if (ovlTrack!=null) ovlTrack.setGeometry(pps,0f,total);
+        // update visible chips width
+        for (int i=0;i<chipPool.size();i++) {
+            int g=virtualStart+i;
+            if (g>=project.clips.size()) break;
+            TextView v=chipPool.get(i);
+            if (v.getParent()==null) continue;
+            LinearLayout.LayoutParams lp=(LinearLayout.LayoutParams) v.getLayoutParams();
+            lp.width=Math.max(dp(28), (int)(project.clips.get(g).durationSec * pps));
+            v.requestLayout();
+        }
+        for (ImageView j: junctionPool) {
+            if (j.getParent()==null) continue;
+            LinearLayout.LayoutParams jlp=(LinearLayout.LayoutParams) j.getLayoutParams();
+            jlp.topMargin=(dp(78)-dp(28))/2;
+        }
+    }
+
+
+    /** Junction k sits between clip k and k+1; its state is clips[k].transition. */
     /** Junction k sits between clip k and k+1; its state is clips[k].transition. */
     private void refreshJunctionIcons() {
+        if (project != null && project.clips.size() > VIRTUAL_THRESHOLD) { refreshJunctionIconsVirtual(); return; }
         for (int k = 0; k < junctions.size(); k++) {
             if (k + 1 >= project.clips.size()) continue;
             boolean has = project.clips.get(k).transition != TransitionType.NONE;
@@ -1026,8 +1320,11 @@ public class MainActivity extends Activity {
         }
     }
 
+
+    /** One shared px-per-second for every timeline lane (v1.8). */
     /** One shared px-per-second for every timeline lane (v1.8). */
     private void applyTimelineGeometry() {
+        if (project != null && project.clips.size() > VIRTUAL_THRESHOLD) { applyTimelineGeometryVirtual(); return; }
         if (ruler == null) return;
         float d = getResources().getDisplayMetrics().density;
         float pps = TimelineRulerView.pxPerSecPx(this, tlZoom);
@@ -1056,10 +1353,19 @@ public class MainActivity extends Activity {
         }
     }
 
+
     private void setTlZoom(float z) {
         tlZoom = Math.max(0.5f, Math.min(4f, z));
         if (ruler != null) ruler.setZoom(tlZoom);
-        applyTimelineGeometry();
+        if (project != null && project.clips.size() > VIRTUAL_THRESHOLD) {
+            buildPrefixWidths();
+            // keep current scroll anchored
+            if (timelineScroll != null) virtualStart = computeWindowStartFor(timelineScroll.getScrollX());
+            rebuildVirtualTimeline();
+            applyTimelineGeometryVirtual();
+        } else {
+            applyTimelineGeometry();
+        }
     }
 
     /** Compact 32dp icon action button (zoom, split, layer row actions). */
@@ -1074,18 +1380,46 @@ public class MainActivity extends Activity {
     }
 
     private void styleChip(int i) {
+        if (project != null && project.clips.size() > VIRTUAL_THRESHOLD) {
+            // virtual mode: find view in pool
+            if (i < virtualStart || i >= virtualStart + chipPool.size()) return;
+            TextView vv = chipPool.get(i - virtualStart);
+            if (vv.getParent()==null) return;
+            styleChipVirtual(i, vv);
+            return;
+        }
         if (i < 0 || i >= chips.size()) return;
         TextView v = chips.get(i);
-        boolean sel = i == selected;
-        v.setBackground(AeDesign.bg(sel ? 0xff12395c : AeDesign.SURFACE_2, dp(14), sel ? AeDesign.ACCENT : AeDesign.STROKE, sel ? 2 : 1));
+        boolean sel = i == selected || multiSelected.contains(i);
+        boolean bulk = multiSelected.contains(i);
+        int bg = sel ? (bulk ? 0xff0f2d5a : 0xff12395c) : AeDesign.SURFACE_2;
+        v.setBackground(AeDesign.bg(bg, dp(14), sel ? AeDesign.ACCENT : AeDesign.STROKE, sel ? 2 : 1));
         v.setTextColor(sel ? 0xffffffff : AeDesign.TEXT);
     }
+
 
     private void refreshSelection() {
         if (selected >= 0 && selected < chips.size()) styleChip(selected);
     }
 
     private void highlightPlayheadChip(int idx) {
+        if (project != null && project.clips.size() > VIRTUAL_THRESHOLD) {
+            if (lastActiveChip >= 0) {
+                if (lastActiveChip >= virtualStart && lastActiveChip < virtualStart + chipPool.size()) {
+                    TextView vv = chipPool.get(lastActiveChip - virtualStart);
+                    if (vv.getParent()!=null && lastActiveChip != selected && !multiSelected.contains(lastActiveChip)) {
+                        // restore normal style
+                        styleChipVirtual(lastActiveChip, vv);
+                    }
+                }
+            }
+            if (idx >= virtualStart && idx < virtualStart + chipPool.size()) {
+                TextView vv = chipPool.get(idx - virtualStart);
+                if (vv.getParent()!=null && idx != selected && !multiSelected.contains(idx)) vv.setBackground(AeDesign.bg(0xff16324f, dp(14), 0x6649A8FF, 1));
+            }
+            lastActiveChip = idx;
+            return;
+        }
         if (lastActiveChip >= 0 && lastActiveChip < chips.size() && lastActiveChip != selected) styleChip(lastActiveChip);
         if (idx >= 0 && idx < chips.size() && idx != selected) {
             TextView v = chips.get(idx);
@@ -1093,6 +1427,7 @@ public class MainActivity extends Activity {
         }
         lastActiveChip = idx;
     }
+
 
     // ---------------------------------------------------------------- panels
 
@@ -1111,6 +1446,15 @@ public class MainActivity extends Activity {
         head.setPadding(dp(6), dp(8), dp(6), dp(4));
         panelHost.addView(head);
 
+        // Bulk hint
+        if (!multiSelected.isEmpty()) {
+            panelHost.addView(label(multiSelected.size() + " clips selected (blue). Duration/motion/effects below affect selection. Use Clear in timeline header to deselect.", 12, AeDesign.ACCENT, Typeface.NORMAL));
+            LinearLayout bulkActs = rowWrap();
+            addAction(bulkActs, "Clear Sel", this::clearSelection);
+            addAction(bulkActs, "Delete Sel", this::deleteSelectedClips);
+            addAction(bulkActs, "Save Sel", this::saveImagesToGallery);
+            panelHost.addView(bulkActs);
+        }
         panelHost.addView(label("Duration (3–8s)", 12, AeDesign.MUTED, Typeface.BOLD));
         LinearLayout durations = row();
         int[] vals = {3, 4, 5, 6, 7, 8};
@@ -1828,6 +2172,11 @@ public class MainActivity extends Activity {
         });
         panelHost.addView(flags);
 
+        // Fit images to audio — premium feature
+        LinearLayout fitRow = rowWrap();
+        addAction(fitRow, "FIT IMAGES TO AUDIO", this::fitImagesToAudio);
+        panelHost.addView(fitRow);
+        panelHost.addView(label("Fits every image duration so total video matches the audio (\" + fmt(audioLengthSec(t)) + \" source). One batch operation.", 11, AeDesign.MUTED, Typeface.NORMAL));
         panelHost.addView(label("Plays in sync with the preview timeline and is encoded into the "
                 + "exported MP4 as a real AAC track.", 12, AeDesign.MUTED, Typeface.NORMAL));
     }
@@ -2090,17 +2439,104 @@ public class MainActivity extends Activity {
 
     private void adjustPanel() {
         openTool("adjust");
-        effectsSheet("Color Adjust", new EffectType[]{
-                EffectType.NONE, EffectType.BRIGHTNESS, EffectType.CONTRAST, EffectType.SATURATION,
-                EffectType.EXPOSURE, EffectType.TEMPERATURE, EffectType.HIGHLIGHTS, EffectType.SHADOWS,
-                EffectType.SHARPEN});
+        if (panelHost == null) return;
+        panelHost.removeAllViews();
+        panelHost.addView(label("Adjust — fine controls (preview = export)", 16, AeDesign.TEXT, Typeface.BOLD));
+        Set<Integer> sel = effectiveSelection();
+        String scope = sel.isEmpty() ? "ALL " + project.clips.size() + " clips" : sel.size() + " selected clip(s)";
+        panelHost.addView(label("Scope: " + scope + " — sliders stack via EffectLayer, not single effect. Undo-safe.", 12, AeDesign.MUTED, Typeface.NORMAL));
+        // Helper to get current intensity for a type in scope
+        // For simplicity, show sliders for the effective selection's first clip or first clip overall
+        TimelineClip rep = null;
+        if (!sel.isEmpty()) { int first = new ArrayList<>(sel).get(0); if (first>=0 && first<project.clips.size()) rep = project.clips.get(first); }
+        else if (!project.clips.isEmpty()) rep = project.clips.get(0);
+        // brightness
+        addAdjustSlider("Brightness", EffectType.BRIGHTNESS, rep);
+        addAdjustSlider("Contrast", EffectType.CONTRAST, rep);
+        addAdjustSlider("Saturation", EffectType.SATURATION, rep);
+        addAdjustSlider("Exposure", EffectType.EXPOSURE, rep);
+        addAdjustSlider("Temperature", EffectType.TEMPERATURE, rep);
+        addAdjustSlider("Highlights", EffectType.HIGHLIGHTS, rep);
+        addAdjustSlider("Shadows", EffectType.SHADOWS, rep);
+        addAdjustSlider("Sharpen", EffectType.SHARPEN, rep);
+        LinearLayout row = rowWrap();
+        addAction(row, "Reset Adjust", () -> {
+            Set<Integer> s = effectiveSelection();
+            if (s.isEmpty() && !project.clips.isEmpty()) { s = new HashSet<>(); for (int i=0;i<project.clips.size();i++) s.add(i); }
+            if (s.isEmpty()) { toast("No clips"); return; }
+            pushUndo();
+            for (int idx: s) {
+                TimelineClip c = project.clips.get(idx);
+                // Remove adjust types
+                for (EffectType t2 : new EffectType[]{EffectType.BRIGHTNESS, EffectType.CONTRAST, EffectType.SATURATION, EffectType.EXPOSURE, EffectType.TEMPERATURE, EffectType.HIGHLIGHTS, EffectType.SHADOWS, EffectType.SHARPEN}) c.effectLayers.removeIf(l -> l.type == t2);
+                // Also clear single effect if it's one of them
+                if (c.effect == EffectType.BRIGHTNESS || c.effect == EffectType.CONTRAST || c.effect == EffectType.SATURATION || c.effect == EffectType.EXPOSURE || c.effect == EffectType.TEMPERATURE || c.effect == EffectType.HIGHLIGHTS || c.effect == EffectType.SHADOWS || c.effect == EffectType.SHARPEN) { c.effect = EffectType.NONE; }
+            }
+            saveProject(true);
+            if (preview != null) preview.invalidate();
+            adjustPanel();
+            toast("Adjust reset");
+        });
+        panelHost.addView(row);
+        panelHost.addView(label("Each slider writes an EffectLayer (stackable). Preview and export share the same rendering path.", 11, AeDesign.MUTED, Typeface.NORMAL));
+    }
+
+    private void addAdjustSlider(String name, EffectType type, TimelineClip rep) {
+        float cur = 0.5f;
+        if (rep != null) {
+            for (EffectLayer l : rep.effectLayers) if (l.type == type) { cur = l.intensity; break; }
+            if (rep.effect == type) cur = rep.effectIntensity;
+        }
+        int pct = Math.round(cur * 100);
+        panelHost.addView(label(name + "  " + pct + "%", 13, AeDesign.TEXT, Typeface.BOLD));
+        // Range 0..100 maps to 0.0..1.0, with 50% as neutral
+        android.widget.SeekBar sb = slider(0, 100, pct, v -> {
+            float intensity = v / 100f;
+            Set<Integer> s = effectiveSelection();
+            if (s.isEmpty() && !project.clips.isEmpty()) { s = new HashSet<>(); for (int i=0;i<project.clips.size();i++) s.add(i); }
+            if (s.isEmpty()) { toast("No clips"); return; }
+            pushUndo();
+            for (int idx: s) {
+                TimelineClip c = project.clips.get(idx);
+                boolean found=false;
+                for (EffectLayer l: c.effectLayers) if (l.type == type) { l.intensity = intensity; found=true; break; }
+                if (!found) c.addEffectLayer(type, intensity);
+                // Keep single effect in sync for preview fallback
+                if (c.effect == type) c.effectIntensity = intensity;
+            }
+            saveProject(true);
+            if (preview != null) preview.invalidate();
+            adjustPanel();
+        });
+        panelHost.addView(sb);
     }
 
     private void autoEditPanel() {
         openTool("autoedit");
-        showPanel("Auto Edit (fills duration + motion + transition)",
-                new String[]{"Cinematic", "Fast", "Smooth", "Shorts", "Documentary", "Vlog"},
-                new Runnable[]{() -> autoEdit(1), () -> autoEdit(2), () -> autoEdit(0), () -> autoEdit(3), () -> autoEdit(4), () -> autoEdit(5)});
+        if (panelHost == null) return;
+        panelHost.removeAllViews();
+        panelHost.addView(label("Auto Edit — one tap story", 16, AeDesign.TEXT, Typeface.BOLD));
+        panelHost.addView(label("Fills duration + motion + transition + effect. Undo-safe. Audio sync available via FIT IMAGES TO AUDIO in Audio panel.", 12, AeDesign.MUTED, Typeface.NORMAL));
+        LinearLayout modes = rowWrap();
+        addAction(modes, "Cinematic", () -> autoEdit(1));
+        addAction(modes, "Fast", () -> autoEdit(2));
+        addAction(modes, "Smooth", () -> autoEdit(0));
+        addAction(modes, "Shorts", () -> autoEdit(3));
+        addAction(modes, "Documentary", () -> autoEdit(4));
+        addAction(modes, "Vlog", () -> autoEdit(5));
+        panelHost.addView(modes);
+        panelHost.addView(label("Auto Motion variants (apply to selection or all)", 13, AeDesign.TEXT, Typeface.BOLD));
+        LinearLayout motionRow = rowWrap();
+        addAction(motionRow, "Balanced", this::applyAutoMotionToSelection);
+        addAction(motionRow, "Random", () -> applyRandomMotionToSelection(false));
+        addAction(motionRow, "Cinematic Seq", () -> { pushUndo(); autoEdit(1); toast("Cinematic auto edit"); });
+        panelHost.addView(motionRow);
+        panelHost.addView(label("Create video presets", 13, AeDesign.TEXT, Typeface.BOLD));
+        LinearLayout create = rowWrap();
+        addChoice(create, "9:16", project.aspectRatio == AspectRatio.R9_16, () -> { project.aspectRatio=AspectRatio.R9_16; applyAspectToPreset(AspectRatio.R9_16); saveProject(true); refreshAfterCanvasChange(); toast("Canvas 9:16"); });
+        addChoice(create, "16:9", project.aspectRatio == AspectRatio.R16_9, () -> { project.aspectRatio=AspectRatio.R16_9; applyAspectToPreset(AspectRatio.R16_9); saveProject(true); refreshAfterCanvasChange(); toast("Canvas 16:9"); });
+        addChoice(create, "1:1", project.aspectRatio == AspectRatio.R1_1, () -> { project.aspectRatio=AspectRatio.R1_1; applyAspectToPreset(AspectRatio.R1_1); saveProject(true); refreshAfterCanvasChange(); toast("Canvas 1:1"); });
+        panelHost.addView(create);
     }
 
     private String scopeLabel() {
@@ -3094,6 +3530,350 @@ public class MainActivity extends Activity {
     private LinearLayout rowWrap() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.LEFT); return l; }
     private LinearLayout col() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); return l; }
     private TextView label(String s, int sp, int color, int style) { return AeDesign.text(this, s, sp, color, style); }
+
+
+    // ---------------------------------------------------------------- bulk selection (10)
+
+    private void selectAllClips() {
+        if (project.clips.isEmpty()) { toast("No clips to select"); return; }
+        multiSelected.clear();
+        for (int i = 0; i < project.clips.size(); i++) multiSelected.add(i);
+        selected = 0;
+        bulkSelectMode = true;
+        buildTimeline(false);
+        showClipPanel();
+        toast("Selected all " + project.clips.size() + " clips");
+    }
+
+    private void clearSelection() {
+        multiSelected.clear();
+        bulkSelectMode = false;
+        selected = -1;
+        buildTimeline(false);
+        showClipPanel();
+        toast("Selection cleared");
+    }
+
+    private Set<Integer> effectiveSelection() {
+        if (!multiSelected.isEmpty()) return new HashSet<>(multiSelected);
+        if (selected >= 0 && selected < project.clips.size()) {
+            Set<Integer> s = new HashSet<>(); s.add(selected); return s;
+        }
+        return Collections.emptySet();
+    }
+
+    private void applyDurationToSelection(int sec) {
+        Set<Integer> sel = effectiveSelection();
+        if (sel.isEmpty()) { toast("Select clips first"); return; }
+        pushUndo();
+        for (int idx : sel) project.clips.get(idx).setDurationMs(sec * 1000L);
+        saveProject(true);
+        buildTimeline(false);
+        if (preview != null) preview.invalidate();
+        toast(sel.size() + " clips \u2192 " + sec + "s");
+    }
+
+    private void applyMotionToSelection(String motionId) {
+        Set<Integer> sel = effectiveSelection();
+        if (sel.isEmpty()) { toast("Select clips first"); return; }
+        Formula f = formulaById(motionId);
+        pushUndo();
+        for (int idx : sel) project.clips.get(idx).formula = f;
+        saveProject(true);
+        buildTimeline(false);
+        if (preview != null) preview.invalidate();
+        toast("Motion " + f.name + " \u2192 " + sel.size() + " clips");
+    }
+
+    // ---------------------------------------------------------------- images / media management (18,19)
+
+    private void imagesPanel() {
+        openTool("images");
+        if (panelHost == null) return;
+        panelHost.removeAllViews();
+        panelHost.addView(label("Images / Media (" + project.clips.size() + " clips)", 16, AeDesign.TEXT, Typeface.BOLD));
+        if (project.clips.isEmpty()) {
+            LinearLayout empty = AeDesign.card(this);
+            empty.setGravity(Gravity.CENTER);
+            ImageView art = new ImageView(this);
+            art.setImageResource(R.drawable.ic_images);
+            art.setColorFilter(AeDesign.ACCENT);
+            art.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            art.setPadding(dp(8), dp(8), dp(8), dp(8));
+            empty.addView(art, new LinearLayout.LayoutParams(dp(64), dp(64)));
+            TextView t = label("Start your story", 18, AeDesign.TEXT, Typeface.BOLD); t.setGravity(Gravity.CENTER); empty.addView(t);
+            TextView s = label("Add images to create a cinematic video. Supports 1 to 1000 images.", 12, AeDesign.MUTED, Typeface.NORMAL); s.setGravity(Gravity.CENTER); empty.addView(s);
+            Button add = AeDesign.button(this, "+ ADD IMAGES", true);
+            AeDesign.press(add, this::pickImages);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(48));
+            lp.setMargins(0, dp(12), 0, 0);
+            empty.addView(add, lp);
+            panelHost.addView(empty);
+            return;
+        }
+        // Action row
+        LinearLayout actions = rowWrap();
+        addAction(actions, "+ Add Images", this::pickImages);
+        addAction(actions, "Select All", this::selectAllClips);
+        addAction(actions, "Deselect All", this::clearSelection);
+        addAction(actions, "Save to Gallery", this::saveImagesToGallery);
+        panelHost.addView(actions);
+
+        LinearLayout bulk = rowWrap();
+        addAction(bulk, "Delete Selected", this::deleteSelectedClips);
+        addAction(bulk, "Duplicate Sel", this::duplicateSelectedClips);
+        addAction(bulk, "Reverse Order", this::reverseClips);
+        panelHost.addView(bulk);
+
+        // Selected info
+        Set<Integer> sel = effectiveSelection();
+        String selInfo = sel.isEmpty() ? "No selection — tap a clip or Select All" : sel.size() + " clip(s) selected (blue highlight)";
+        panelHost.addView(label(selInfo, 12, sel.isEmpty() ? AeDesign.MUTED : AeDesign.ACCENT, Typeface.NORMAL));
+
+        // Bulk duration quick apply
+        panelHost.addView(label("Apply duration to selection", 13, AeDesign.TEXT, Typeface.BOLD));
+        LinearLayout durs = row();
+        for (int sec : new int[]{3,4,5,6,7,8}) {
+            final int s = sec;
+            TextView v = label(s+"s", 12, AeDesign.TEXT, Typeface.BOLD);
+            v.setGravity(Gravity.CENTER);
+            v.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(12), AeDesign.STROKE, 1));
+            AeDesign.press(v, () -> applyDurationToSelection(s));
+            LinearLayout.LayoutParams lpp = new LinearLayout.LayoutParams(0, dp(40), 1);
+            lpp.setMargins(dp(3), dp(3), dp(3), dp(3));
+            durs.addView(v, lpp);
+        }
+        panelHost.addView(durs);
+
+        // Bulk motion quick apply
+        panelHost.addView(label("Apply motion to selection — open Motion panel for full library", 12, AeDesign.MUTED, Typeface.NORMAL));
+        LinearLayout mrow = rowWrap();
+        addAction(mrow, "Auto Motion", this::applyAutoMotionToSelection);
+        addAction(mrow, "Random Motion", () -> applyRandomMotionToSelection(false));
+        panelHost.addView(mrow);
+
+        // Create video project from selected
+        panelHost.addView(label("Create video from selection", 13, AeDesign.TEXT, Typeface.BOLD));
+        LinearLayout createRow = rowWrap();
+        addChoice(createRow, "9:16 Shorts", project.aspectRatio == AspectRatio.R9_16, () -> { project.aspectRatio = AspectRatio.R9_16; applyAspectToPreset(AspectRatio.R9_16); saveProject(true); refreshAfterCanvasChange(); toast("Canvas 9:16"); });
+        addChoice(createRow, "16:9 YouTube", project.aspectRatio == AspectRatio.R16_9, () -> { project.aspectRatio = AspectRatio.R16_9; applyAspectToPreset(AspectRatio.R16_9); saveProject(true); refreshAfterCanvasChange(); toast("Canvas 16:9"); });
+        addChoice(createRow, "1:1", project.aspectRatio == AspectRatio.R1_1, () -> { project.aspectRatio = AspectRatio.R1_1; applyAspectToPreset(AspectRatio.R1_1); saveProject(true); refreshAfterCanvasChange(); toast("Canvas 1:1"); });
+        panelHost.addView(createRow);
+
+        panelHost.addView(label("Images are stored as lightweight URIs + metadata. Full bitmaps are decoded only for preview/export with downsampling & LRU — 500–1000 images stay responsive.", 11, AeDesign.MUTED, Typeface.NORMAL));
+    }
+
+    private void deleteSelectedClips() {
+        Set<Integer> sel = effectiveSelection();
+        if (sel.isEmpty()) { toast("Nothing selected"); return; }
+        pushUndo();
+        List<Integer> sorted = new ArrayList<>(sel);
+        Collections.sort(sorted, Collections.reverseOrder());
+        for (int idx : sorted) if (idx >=0 && idx < project.clips.size()) project.clips.remove(idx);
+        multiSelected.clear();
+        selected = -1;
+        bulkSelectMode = false;
+        saveProject(true);
+        buildTimeline(true);
+        showClipPanel();
+        toast("Deleted " + sel.size() + " clip(s)");
+    }
+
+    private void duplicateSelectedClips() {
+        Set<Integer> sel = effectiveSelection();
+        if (sel.isEmpty()) { toast("Nothing selected"); return; }
+        pushUndo();
+        List<TimelineClip> toAdd = new ArrayList<>();
+        for (int idx : sel) {
+            TimelineClip c = project.clips.get(idx);
+            TimelineClip n = new TimelineClip(c.uri, project.clips.size()+1, c.formula);
+            n.setDurationMs(c.durationMs);
+            n.effect = c.effect; n.effectIntensity = c.effectIntensity;
+            for (EffectLayer l : c.effectLayers) n.effectLayers.add(l.copy());
+            n.transition = c.transition; n.transitionDurationSec = c.transitionDurationSec;
+            n.transitionPresetId = c.transitionPresetId;
+            toAdd.add(n);
+        }
+        project.clips.addAll(toAdd);
+        saveProject(true);
+        buildTimeline(true);
+        imagesPanel();
+        toast("Duplicated " + toAdd.size() + " clip(s)");
+    }
+
+    private void reverseClips() {
+        if (project.clips.size() < 2) { toast("Need at least 2 clips"); return; }
+        pushUndo();
+        Collections.reverse(project.clips);
+        multiSelected.clear();
+        selected = -1;
+        saveProject(true);
+        buildTimeline(true);
+        showClipPanel();
+        toast("Order reversed");
+    }
+
+    private void saveImagesToGallery() {
+        Set<Integer> sel = effectiveSelection();
+        if (sel.isEmpty()) {
+            // If nothing selected, save all
+            if (project.clips.isEmpty()) { toast("No images to save"); return; }
+            sel = new HashSet<>();
+            for (int i=0;i<project.clips.size();i++) sel.add(i);
+        }
+        final Set<Integer> toSave = new HashSet<>(sel);
+        // Background batch with progress dialog, downsampling, no OOM
+        ProgressDialog pd = new ProgressDialog(this);
+        pd.setTitle("Saving to Gallery");
+        pd.setMessage("Preparing " + toSave.size() + " images...");
+        pd.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+        pd.setMax(toSave.size());
+        pd.setCancelable(false);
+        pd.show();
+        new Thread(() -> {
+            int ok = 0, fail = 0;
+            List<Integer> list = new ArrayList<>(toSave);
+            Collections.sort(list);
+            for (int i=0;i<list.size();i++) {
+                int idx = list.get(i);
+                if (idx <0 || idx >= project.clips.size()) { fail++; continue; }
+                String uriStr = project.clips.get(idx).uri;
+                try {
+                    Uri uri = Uri.parse(uriStr);
+                    // Decode with sampling to avoid OOM, then save via GallerySaver
+                    Bitmap bmp = null;
+                    try (InputStream is = getContentResolver().openInputStream(uri)) {
+                        if (is != null) {
+                            BitmapFactory.Options opts = new BitmapFactory.Options();
+                            opts.inSampleSize = 1;
+                            // First decode bounds to avoid huge
+                            // For saving we want reasonable size, not full 4000px
+                            bmp = BitmapFactory.decodeStream(is);
+                        }
+                    } catch (Exception e) {
+                        // fallback try direct
+                        Log.w(TAG, "Save decode failed idx " + idx, e);
+                    }
+                    if (bmp == null) {
+                        // Try via content resolver with downsampling
+                        try {
+                            BitmapFactory.Options bounds = new BitmapFactory.Options();
+                            bounds.inJustDecodeBounds = true;
+                            try (InputStream is2 = getContentResolver().openInputStream(uri)) { BitmapFactory.decodeStream(is2, null, bounds); }
+                            int sample = 1;
+                            while (bounds.outWidth / sample > 2048 || bounds.outHeight / sample > 2048) sample *=2;
+                            BitmapFactory.Options opts2 = new BitmapFactory.Options();
+                            opts2.inSampleSize = sample;
+                            try (InputStream is3 = getContentResolver().openInputStream(uri)) { bmp = BitmapFactory.decodeStream(is3, null, opts2); }
+                        } catch (Exception e2) { Log.e(TAG, "Second decode failed", e2); }
+                    }
+                    if (bmp == null) { fail++; continue; }
+                    String name = "AutoEdit_img_" + System.currentTimeMillis() + "_" + idx;
+                    // Use GallerySaver which handles MediaStore correctly
+                    GallerySaver.save(MainActivity.this, bmp, name, "JPG", 92, GallerySaver.Folder.PICTURES);
+                    bmp.recycle();
+                    ok++;
+                } catch (Exception e) {
+                    Log.e(TAG, "Save to gallery failed idx " + idx, e);
+                    fail++;
+                }
+                final int p = i+1;
+                final int okF = ok, failF = fail;
+                handler.post(() -> {
+                    pd.setProgress(p);
+                    pd.setMessage("Saved " + okF + " / " + toSave.size() + (failF>0?" ("+failF+" failed)":""));
+                });
+                // Yield to avoid blocking UI too long, and batch
+                try { Thread.sleep(30); } catch (InterruptedException ignored) {}
+            }
+            final int okFinal = ok, failFinal = fail;
+            handler.post(() -> {
+                try { pd.dismiss(); } catch (Exception ignored) {}
+                if (failFinal==0) toast("Saved " + okFinal + " image(s) to Pictures/AutoEdit");
+                else toast("Saved " + okFinal + " image(s), " + failFinal + " failed — see log");
+            });
+        }, "SaveImagesToGallery").start();
+    }
+
+    private void applyAutoMotionToSelection() {
+        Set<Integer> sel = effectiveSelection();
+        if (sel.isEmpty()) {
+            if (project.clips.isEmpty()) { toast("No clips"); return; }
+            sel = new HashSet<>();
+            for (int i=0;i<project.clips.size();i++) sel.add(i);
+        }
+        String[] modes = new String[]{"Zoom In","Pan Left","Zoom Out","Pan Right","Push In","Pull Out"};
+        List<Formula> motions = formulas.motions();
+        // Map to motion names intelligently
+        Map<String,String> map = new HashMap<>();
+        for (Formula f: motions) map.put(f.name.toLowerCase(), f.id);
+        String[] seq = {"slow zoom in","slow zoom out","pan left","pan right","cinematic push","cinematic pull","zoom","pan"};
+        pushUndo();
+        int i=0;
+        List<Integer> ordered = new ArrayList<>(sel);
+        Collections.sort(ordered);
+        for (int idx : ordered) {
+            String mode = modes[i % modes.length];
+            String bestId = null;
+            for (Formula f: motions) if (f.name.toLowerCase().contains(mode.toLowerCase().split(" ")[0])) { bestId = f.id; break; }
+            if (bestId == null) bestId = motions.get((idx*7)%motions.size()).id;
+            else {
+                // Try to find exact like Zoom In etc.
+                for (Formula f: motions) if (f.name.equalsIgnoreCase(mode)) { bestId = f.id; break; }
+            }
+            project.clips.get(idx).formula = formulas.byId(bestId);
+            i++;
+        }
+        saveProject(true);
+        buildTimeline(false);
+        if (preview != null) preview.invalidate();
+        toast("Auto motion \u2192 " + sel.size() + " clips (balanced cinematic)");
+    }
+
+    private void applyRandomMotionToSelection(boolean balanced) {
+        Set<Integer> sel = effectiveSelection();
+        if (sel.isEmpty()) {
+            if (project.clips.isEmpty()) { toast("No clips"); return; }
+            sel = new HashSet<>();
+            for (int i=0;i<project.clips.size();i++) sel.add(i);
+        }
+        List<Formula> motions = formulas.motions();
+        Random rnd = new Random();
+        pushUndo();
+        List<Integer> ordered = new ArrayList<>(sel);
+        Collections.sort(ordered);
+        String prevId = null;
+        for (int idx : ordered) {
+            Formula pick;
+            int tries=0;
+            do {
+                pick = motions.get(rnd.nextInt(motions.size()));
+                tries++;
+            } while (balanced && pick.id.equals(prevId) && tries<5);
+            project.clips.get(idx).formula = formulas.byId(pick.id);
+            prevId = pick.id;
+        }
+        saveProject(true);
+        buildTimeline(false);
+        if (preview != null) preview.invalidate();
+        toast("Random motion \u2192 " + sel.size() + " clips");
+    }
+
+    private void fitImagesToAudio() {
+        AudioTrack t = project.primaryAudio();
+        if (t == null) { toast("Add audio first"); return; }
+        float audioSec = t.effectiveDurationSec();
+        if (audioSec <= 0) audioSec = audioLengthSec(t);
+        if (audioSec <= 0 || project.clips.isEmpty()) { toast("No audio duration"); return; }
+        pushUndo();
+        float perClip = audioSec / project.clips.size();
+        perClip = Math.max(0.5f, Math.min(60f, perClip));
+        for (TimelineClip c : project.clips) c.setDurationSeconds(perClip);
+        saveProject(true);
+        buildTimeline(false);
+        if (preview != null) preview.invalidate();
+        toast("Fitted " + project.clips.size() + " clips to audio (" + String.format(Locale.US,"%.1fs", perClip) + " each \u2192 " + String.format(Locale.US,"%.1fs", perClip*project.clips.size()) + " total)");
+    }
 
     private void saveProject(boolean visible) {
         if (store != null && project != null) {

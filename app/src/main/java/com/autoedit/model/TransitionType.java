@@ -78,7 +78,36 @@ public enum TransitionType {
     GALLERY_MESSY,      // controlled irregular panels
     GALLERY_MORPH,      // quadrant matrix morph
     GALLERY_CAROUSEL,   // 3D ring swing (real Camera perspective)
-    GALLERY_COLUMNS;    // vertical column reveal
+    GALLERY_COLUMNS,
+
+    // ===== 3D / Perspective Detailed (prompt 2026-09-10 Bangladesh) — 27 precise specs =====
+    PAGE_TURN,          // 1 Page Turn Y 0→180 with edge gradient
+    PAGE_CURL,          // 2 Page Curl bezier diagonal + shadow
+    BOOK_OPEN,          // 3 Book Open split middle Y ±120 with spine shadow
+    CUBE_H,             // 4 Cube Horizontal Y -90→0 with perspective 800-1200
+    CUBE_V,             // 5 Cube Vertical X
+    CUBE_INSIDE_OUT,    // 6 Cube Inside Out scale 1→2.5 vs 0.3→1 with blur
+    DOOR_OPEN,          // 7 Door Open Y ±90 hinge shadow
+    FOLD_ACCORDION,     // 8 Fold Accordion 3-5 strips staggered shadow
+    ORIGAMI_FOLD,       // 9 Origami triangular multi-axis
+    FLIP_H,             // 10 Horizontal Flip Y centre 0→180
+    FLIP_V,             // 11 Vertical Flip X centre 0→180
+    FLIP_SCALE,         // 12 Flip with Scale 0.7→1 bouncy
+    ZOOM_DEPTH,         // 13 Zoom Depth push Z 1→1.3 vs 0.7→1
+    PARALLAX_ZOOM,      // 14 Parallax Zoom bg 1.1 vs fg 1.4
+    PERSPECTIVE_PULL,   // 15 Perspective Pull corner anchored distort
+    SLIDE_3D,           // 16 Slide 3D rotate ±15 + slide
+    CAROUSEL_ROTATE,    // 17 Carousel cylinder 360/N
+    COVERFLOW,          // 18 Coverflow 45-60° + reflection
+    VENETIAN_BLINDS,    // 19 Venetian blinds horizontal strips staggered 50-100ms
+    SHUTTER_SPLIT,      // 20 Shutter split vertical/horizontal
+    CIRCLE_REVEAL_3D,   // 21 Circle Reveal 3D bulge lens distortion
+    POLYGON_REVEAL,     // 22 Polygon reveal hexagon/diamond rotate
+    SWING_PENDULUM,     // 23 Swing pendulum elastic damped 15→-10→5
+    RIPPLE_WAVE_3D,     // 24 Ripple/Wave 3D sine displacement
+    EXPLODE_SHATTER,    // 25 Explode shatter voronoi 30-50 pieces gravity
+    SPIN_ZOOM,          // 26 Spin & Zoom Z 180-360 + scale 1→0 / 0→1
+    MIRROR_SPLIT;       // 27 Mirror split symmetric Y    // vertical column reveal
 
     /**
      * Multi-panel gallery transitions (v1.8). These are rendered by

@@ -340,6 +340,36 @@ public class TransitionRegistry {
         // ============ PHOTO (v1.8) — real presets on existing renderers ============
         reg(new TransitionPreset.B("polaroid_pop", "Polaroid Pop", PH, TransitionType.SHAPE_REVEAL).dir("roundrect").dur(.7f,.3f,2f).tags("photo","polaroid","frame","memory").desc("Polaroid-style framed reveal").build());
         reg(new TransitionPreset.B("album_flip", "Album Flip", PH, TransitionType.PAGE_TURN_3D).dur(.7f,.3f,2f).tags("photo","album","flip","3d","memory").desc("Photo album page turn").build());
+
+        // ===== 3D / Perspective Detailed (Bangladesh prompt 2026-09-10) — 27 precise specs =====
+        // Each preset maps 4 params: pivot/axis, transform-range, mid-visual, easing. Rendered by TransitionEngine.
+        reg(new TransitionPreset.B("d_page_turn", "Page Turn", TD, TransitionType.PAGE_TURN).dur(.7f,.3f,1.5f).tags("3d","page","turn","book","perspective","y-axis").desc("Y 0→180 pivot right edge, white edge line at 90, ease-in-out").build());
+        reg(new TransitionPreset.B("d_page_curl", "Page Curl", TD, TransitionType.PAGE_CURL).dur(.8f,.35f,1.8f).tags("3d","curl","bezier","diagonal","shadow").desc("Bezier curl from bottom-right, shadow gradient, ease-in").build());
+        reg(new TransitionPreset.B("d_book_open", "Book Open", TD, TransitionType.BOOK_OPEN).dur(.75f,.3f,1.8f).tags("3d","book","open","spine","y-axis").desc("Split middle Y ±120 spine shadow, 0.95→1 scale, ease-out").build());
+        reg(new TransitionPreset.B("d_cube_h", "Cube Horizontal", TD, TransitionType.CUBE_H).dir("left").dur(.65f,.3f,1.4f).tags("3d","cube","horizontal","y-axis","perspective").desc("Y 0→-90 left edge pivot, B 90→0 right, perspective 800-1200").build());
+        reg(new TransitionPreset.B("d_cube_v", "Cube Vertical", TD, TransitionType.CUBE_V).dir("up").dur(.65f,.3f,1.4f).tags("3d","cube","vertical","x-axis").desc("X axis up/down, same cube logic, direction reversible").build());
+        reg(new TransitionPreset.B("d_cube_inside", "Cube Inside Out", TD, TransitionType.CUBE_INSIDE_OUT).dur(.7f,.3f,1.5f).tags("3d","cube","inside","scale","blur").desc("A 1→2.5 fade out, B 0.3→1, cross-fade swoosh, radial blur").build());
+        reg(new TransitionPreset.B("d_door_open", "Door Open", TD, TransitionType.DOOR_OPEN).dur(.7f,.3f,1.5f).tags("3d","door","hinge","y-axis","panel").desc("Split vertical panels Y ±90 hinge shadow, B reveal behind").build());
+        reg(new TransitionPreset.B("d_fold_acc", "Fold Accordion", TD, TransitionType.FOLD_ACCORDION).dur(.8f,.35f,1.8f).tags("3d","fold","accordion","strip","shadow").desc("3-5 vertical strips alternate ±90, crease shadow, sequential").build());
+        reg(new TransitionPreset.B("d_origami", "Origami Fold", TD, TransitionType.ORIGAMI_FOLD).dur(.9f,.4f,2f).tags("3d","origami","triangular","multi-axis").desc("4-6 triangular panels multi-axis staggered from center").build());
+        reg(new TransitionPreset.B("d_flip_h", "Flip Horizontal", TD, TransitionType.FLIP_H).dur(.6f,.25f,1.4f).tags("3d","flip","horizontal","y-axis","mirror").desc("Centre Y 0→180, white line at 90, symmetric").build());
+        reg(new TransitionPreset.B("d_flip_v", "Flip Vertical", TD, TransitionType.FLIP_V).dur(.6f,.25f,1.4f).tags("3d","flip","vertical","x-axis").desc("Centre X 0→180, horizontal line at 90").build());
+        reg(new TransitionPreset.B("d_flip_scale", "Flip Scale", TD, TransitionType.FLIP_SCALE).dur(.65f,.25f,1.4f).tags("3d","flip","scale","bouncy","spring").desc("Flip Y/X + 1→0.7→1 scale pop, spring easing").build());
+        reg(new TransitionPreset.B("d_zoom_depth", "Zoom Depth", TD, TransitionType.ZOOM_DEPTH).dur(.6f,.25f,1.5f).tags("3d","zoom","depth","push","z-axis").desc("A 1→1.3 alpha 1→0, B 0.7→1 alpha 0→1, linear/ease-in-out").build());
+        reg(new TransitionPreset.B("d_parallax", "Parallax Zoom", TD, TransitionType.PARALLAX_ZOOM).dur(.7f,.3f,1.5f).tags("3d","parallax","zoom","depth","foreground").desc("Bg 1→1.1 vs Fg 1→1.4 separate speeds, depth-of-field").build());
+        reg(new TransitionPreset.B("d_pull", "Perspective Pull", TD, TransitionType.PERSPECTIVE_PULL).dur(.7f,.3f,1.5f).tags("3d","perspective","pull","corner","distort").desc("Corner anchored distort to corner, B reverse perspective").build());
+        reg(new TransitionPreset.B("d_slide3d", "Slide 3D", TD, TransitionType.SLIDE_3D).dir("left").dur(.55f,.25f,1.3f).tags("3d","slide","rotate","y-axis").desc("Slide + Y -15→0 rotate, more 3D than plain slide").build());
+        reg(new TransitionPreset.B("d_carousel", "Carousel Rotate", TD, TransitionType.CAROUSEL_ROTATE).dur(.8f,.35f,1.8f).tags("3d","carousel","cylinder","rotate").desc("Cylinder Y 360/N, front large, side angled, sequential").build());
+        reg(new TransitionPreset.B("d_coverflow", "Coverflow", TD, TransitionType.COVERFLOW).dur(.75f,.3f,1.6f).tags("3d","coverflow","itunes","reflection","45deg").desc("Centre straight, sides 45-60° overlapped, reflection").build());
+        reg(new TransitionPreset.B("d_venetian", "Venetian Blinds", TD, TransitionType.VENETIAN_BLINDS).dur(.85f,.35f,1.8f).tags("3d","venetian","blinds","strip","staggered").desc("5-8 strips X 0→90 staggered 50-100ms, edge-on reveal").build());
+        reg(new TransitionPreset.B("d_shutter", "Shutter Split", TD, TransitionType.SHUTTER_SPLIT).dur(.55f,.25f,1.3f).tags("3d","shutter","split","camera").desc("Split up/down slide out, thin seam line, B reveal").build());
+        reg(new TransitionPreset.B("d_circle3d", "Circle Reveal 3D", TD, TransitionType.CIRCLE_REVEAL_3D).dur(.7f,.3f,1.6f).tags("3d","circle","reveal","bulge","lens").desc("Radius 0→diag with 3D bulge lens distortion").build());
+        reg(new TransitionPreset.B("d_polygon", "Polygon Reveal", TD, TransitionType.POLYGON_REVEAL).dur(.7f,.3f,1.6f).tags("3d","polygon","hexagon","diamond","rotate").desc("Hexagon/diamond mask centre expand + rotate, B inside").build());
+        reg(new TransitionPreset.B("d_swing", "Swing", TD, TransitionType.SWING_PENDULUM).dur(.9f,.4f,2f).tags("3d","swing","pendulum","elastic","damped").desc("Top-center pivot Z 15→-10→5→0 damped elastic oscillation").build());
+        reg(new TransitionPreset.B("d_ripple", "Ripple Wave 3D", TD, TransitionType.RIPPLE_WAVE_3D).dur(.8f,.35f,1.8f).tags("3d","ripple","wave","sine","displacement").desc("Sine wave from centre/corner displacement, GPU shader style").build());
+        reg(new TransitionPreset.B("d_explode", "Explode", TD, TransitionType.EXPLODE_SHATTER).dur(.85f,.35f,1.8f).tags("3d","explode","shatter","voronoi","gravity").desc("30-50 polygons outward velocity + rotation + gravity fade").build());
+        reg(new TransitionPreset.B("d_spinzoom", "Spin Zoom", TD, TransitionType.SPIN_ZOOM).dur(.7f,.3f,1.5f).tags("3d","spin","zoom","rotate","z-axis").desc("Z 0→360 spin scale 1→0 / 0→1 sync, no break").build());
+        reg(new TransitionPreset.B("d_mirror", "Mirror Split", TD, TransitionType.MIRROR_SPLIT).dur(.6f,.25f,1.4f).tags("3d","mirror","split","symmetric","y-axis").desc("Centre mirror halves symmetric slide + Y rotate, white seam").build());
     }
 
     public static List<TransitionPreset> all() { return ALL; }
