@@ -33,15 +33,33 @@ import com.autoedit.update.UpdateActivity;
 import com.autoedit.update.UpdateChecker;
 import com.autoedit.update.VersionConfig;
 import com.autoedit.update.SemVer;
+import com.autoedit.zip.ZipBatchImporter;
+import com.autoedit.zip.ZipBatchModels;
+import com.autoedit.zip.ZipBatchModels.BatchResult;
+import com.autoedit.zip.ZipBatchModels.ReadyImage;
+import com.autoedit.zip.ZipBatchModels.UnnumberedPolicy;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     private static final int PICK_IMAGES = 10, PICK_AUDIO = 11, REQ_CUSTOM_FORMULA = 12,
-            PICK_OVERLAY_IMAGE = 13, PICK_LOGO = 14;
+            PICK_OVERLAY_IMAGE = 13, PICK_LOGO = 14, PICK_ZIP_BATCH = 15, PICK_DEVICE_FILES = 16;
     private static final String TAG = "AutoEditMain";
 
     private EditProject project;
     private ProjectStore store;
+    private ProjectLibrary library;
+    private String activeProjectId;
     private FormulaEngine formulas;
+    private final ExecutorService bg = Executors.newSingleThreadExecutor();
+    private ZipBatchImporter zipImporter;
+    private AlertDialog zipProgressDialog;
+    private TextView zipProgressLabel;
+    private ProgressBar zipProgressBar;
+    private BatchResult pendingZipResult;
+    private boolean zipKeepDuplicates = true;
+    private UnnumberedPolicy zipUnnumberedPolicy = UnnumberedPolicy.SKIP;
     private LinearLayout root;
     private TextView saveStatus;
     private String screen = "home";
@@ -146,8 +164,12 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         store = new ProjectStore(this);
+        library = new ProjectLibrary(this);
         formulas = new FormulaEngine();
-        project = store.load();
+        // Multi-project library: bootstrap legacy single-project into the list
+        // and load the active one. Editor/export still use the same EditProject.
+        activeProjectId = library.ensureBootstrapped();
+        project = library.loadActive();
         draftPreset = project.exportPreset;
         draftFps = project.fps;
         draftFit = project.fitMode;
@@ -310,12 +332,20 @@ public class MainActivity extends Activity {
         super.onDestroy();
         handler.removeCallbacks(autosave);
         releaseAudio();
+        if (zipImporter != null) zipImporter.cancel();
+        try { bg.shutdownNow(); } catch (Exception ignored) {}
     }
 
     @Override public void onBackPressed() {
         if ("exporting".equals(screen)) {
             if (exportRunning) confirmCancelExport();
             else showEditor();
+            return;
+        }
+        if ("zip_import".equals(screen) || "zip_summary".equals(screen)) {
+            if (zipImporter != null) zipImporter.cancel();
+            dismissZipProgress();
+            showEditor();
             return;
         }
         if (sheet != null && sheet.isShowing()) { sheet.dismiss(); clearActiveTool(); return; }
@@ -364,14 +394,32 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- home
 
+    /**
+     * Home is a single vertical ScrollView so every saved project is reachable.
+     * Status-bar / nav-bar insets stay on the outer root via {@link #applySystemInsets};
+     * the scroll content adds extra bottom padding so the last card clears the
+     * gesture/nav area. No nested conflicting scroll containers.
+     */
     private void showHome() {
         screen = "home";
         base();
+
+        // Outer root holds only the scroll surface (fill height). Insets already
+        // applied by base() — do NOT add a second nested ScrollView with its own
+        // conflicting height weight that would clip lower projects.
+        ScrollView scroller = new ScrollView(this);
+        scroller.setFillViewport(true);
+        scroller.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        scroller.setVerticalScrollBarEnabled(true);
+        LinearLayout content = col();
+        // Extra bottom padding so the final project card clears gesture nav.
+        content.setPadding(0, 0, 0, dp(48));
+
         LinearLayout header = row();
         header.setGravity(Gravity.CENTER_VERTICAL);
         ImageView logo = new ImageView(this);
-        logo.setImageResource(R.drawable.logo_autoedit_alpha); // transparent logo (background keyed out)
-        logo.setScaleType(ImageView.ScaleType.FIT_CENTER);      // aspect-preserved, never stretched
+        logo.setImageResource(R.drawable.logo_autoedit_alpha);
+        logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
         logo.setAdjustViewBounds(true);
         header.addView(logo, new LinearLayout.LayoutParams(dp(66), dp(48)));
         LinearLayout titles = col();
@@ -381,71 +429,197 @@ public class MainActivity extends Activity {
         ImageView gear = AeDesign.iconButton(this, R.drawable.ic_settings, "Settings", false);
         AeDesign.press(gear, () -> showSettings());
         header.addView(gear, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        root.addView(header);
+        content.addView(header);
 
         Button create = AeDesign.button(this, "+ Create Project", true);
         AeDesign.press(create, () -> showCreateProject(false));
         LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, dp(62));
-        cp.setMargins(0, dp(22), 0, dp(20));
-        root.addView(create, cp);
+        cp.setMargins(0, dp(22), 0, dp(16));
+        content.addView(create, cp);
 
-        root.addView(label("Recent Projects", 20, AeDesign.TEXT, Typeface.BOLD));
-        if (project.clips.isEmpty()) emptyState(); else projectCard(project);
+        List<ProjectLibrary.Entry> entries = library == null
+                ? Collections.<ProjectLibrary.Entry>emptyList()
+                : library.list();
+        content.addView(label("Recent Projects  ·  " + entries.size(), 20, AeDesign.TEXT, Typeface.BOLD));
 
-        // ---- Prompt Library entry (infrastructure per master task Part 13) ----
-        LinearLayout promptCard = AeDesign.card(this);
-        LinearLayout prow = row();
-        prow.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView picon = new ImageView(this);
-        picon.setImageResource(R.drawable.ic_formula);
-        picon.setColorFilter(AeDesign.ACCENT);
-        picon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        picon.setPadding(dp(8), dp(8), dp(8), dp(8));
-        picon.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(16), AeDesign.STROKE, 1));
-        prow.addView(picon, new LinearLayout.LayoutParams(dp(52), dp(52)));
-        LinearLayout pinfo = col();
-        pinfo.setPadding(dp(12), 0, 0, 0);
-        pinfo.addView(label("Prompts", 17, AeDesign.TEXT, Typeface.BOLD));
-        pinfo.addView(label("Prompt name • description • preview • formula", 12, AeDesign.MUTED, Typeface.NORMAL));
-        prow.addView(pinfo, new LinearLayout.LayoutParams(0, -2, 1));
-        Button popen = AeDesign.button(this, "OPEN", false);
-        AeDesign.press(popen, () -> showPrompts());
-        prow.addView(popen, new LinearLayout.LayoutParams(-2, dp(44)));
-        promptCard.addView(prow);
-        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(-1, -2);
-        plp.setMargins(0, dp(14), 0, 0);
-        root.addView(promptCard, plp);
+        if (entries.isEmpty()) {
+            content.addView(buildEmptyProjectsCard());
+        } else {
+            for (int i = 0; i < entries.size(); i++) {
+                content.addView(buildProjectCard(entries.get(i), i == 0));
+            }
+        }
+
+        // ---- Prompt Library entry ----
+        content.addView(buildHomeFeatureCard(
+                R.drawable.ic_formula, "Prompts",
+                "Prompt name • description • preview • formula",
+                "OPEN", false, () -> showPrompts()));
 
         // ---- Video Frame Extractor entry ----
-        LinearLayout frameCard = AeDesign.card(this);
-        LinearLayout frow = row();
-        frow.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView ficon = new ImageView(this);
-        ficon.setImageResource(R.drawable.ic_images);
-        ficon.setColorFilter(AeDesign.ACCENT);
-        ficon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        ficon.setPadding(dp(8), dp(8), dp(8), dp(8));
-        ficon.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(16), AeDesign.STROKE, 1));
-        frow.addView(ficon, new LinearLayout.LayoutParams(dp(52), dp(52)));
-        LinearLayout finfo = col();
-        finfo.setPadding(dp(12), 0, 0, 0);
-        finfo.addView(label("🎬 Video Frame Extractor", 17, AeDesign.TEXT, Typeface.BOLD));
-        finfo.addView(label("Extract frames from your video automatically — 100% offline", 12, AeDesign.MUTED, Typeface.NORMAL));
-        frow.addView(finfo, new LinearLayout.LayoutParams(0, -2, 1));
-        Button fopen = AeDesign.button(this, "OPEN", true);
-        AeDesign.press(fopen, () -> {
-            try {
-                startActivity(new Intent(this, FrameExtractorActivity.class));
-            } catch (Exception e) {
-                Log.e(TAG, "Frame extractor failed", e);
-                toast("Could not open Frame Extractor");
+        content.addView(buildHomeFeatureCard(
+                R.drawable.ic_images, "🎬 Video Frame Extractor",
+                "Extract frames from your video automatically — 100% offline",
+                "OPEN", true, () -> {
+                    try {
+                        startActivity(new Intent(this, FrameExtractorActivity.class));
+                    } catch (Exception e) {
+                        Log.e(TAG, "Frame extractor failed", e);
+                        toast("Could not open Frame Extractor");
+                    }
+                }));
+
+        scroller.addView(content);
+        root.addView(scroller, new LinearLayout.LayoutParams(-1, 0, 1));
+    }
+
+    private LinearLayout buildEmptyProjectsCard() {
+        LinearLayout c = AeDesign.card(this);
+        c.setGravity(Gravity.CENTER);
+        TextView icon = label("No projects yet", 20, AeDesign.TEXT, Typeface.BOLD);
+        icon.setGravity(Gravity.CENTER);
+        c.addView(icon);
+        TextView b = label("Create your first video from images and make it move.", 14, AeDesign.MUTED, Typeface.NORMAL);
+        b.setGravity(Gravity.CENTER);
+        c.addView(b);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(0, dp(14), 0, 0);
+        c.setLayoutParams(lp);
+        return c;
+    }
+
+    private LinearLayout buildHomeFeatureCard(int iconRes, String title, String sub,
+                                              String btnLabel, boolean primary, Runnable action) {
+        LinearLayout card = AeDesign.card(this);
+        LinearLayout row = row();
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconRes);
+        icon.setColorFilter(AeDesign.ACCENT);
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        icon.setPadding(dp(8), dp(8), dp(8), dp(8));
+        icon.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(16), AeDesign.STROKE, 1));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        LinearLayout info = col();
+        info.setPadding(dp(12), 0, 0, 0);
+        info.addView(label(title, 17, AeDesign.TEXT, Typeface.BOLD));
+        info.addView(label(sub, 12, AeDesign.MUTED, Typeface.NORMAL));
+        row.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+        Button open = AeDesign.button(this, btnLabel, primary);
+        AeDesign.press(open, action);
+        row.addView(open, new LinearLayout.LayoutParams(-2, dp(44)));
+        card.addView(row);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(0, dp(10), 0, 0);
+        card.setLayoutParams(lp);
+        return card;
+    }
+
+    /** One project row on the Home list. Fully visible when scrolled into view. */
+    private LinearLayout buildProjectCard(ProjectLibrary.Entry e, boolean isActive) {
+        LinearLayout card = AeDesign.card(this);
+        card.setPadding(dp(16), dp(14), dp(16), dp(14));
+        if (isActive) {
+            card.setBackground(AeDesign.bg(0xff0c2238, dp(26), AeDesign.ACCENT, 2));
+        }
+        LinearLayout top = row();
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView thumb = label(String.format(Locale.US, "%d", e.clipCount), 22, AeDesign.ACCENT, Typeface.BOLD);
+        thumb.setGravity(Gravity.CENTER);
+        thumb.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(16), AeDesign.STROKE, 1));
+        top.addView(thumb, new LinearLayout.LayoutParams(dp(72), dp(60)));
+        LinearLayout info = col();
+        info.setPadding(dp(12), 0, 0, 0);
+        String title = e.name + (isActive ? "  ·  Active" : "");
+        info.addView(label(title, 17, AeDesign.TEXT, Typeface.BOLD));
+        info.addView(label(e.clipCount + " clips • " + fmt(e.durationSec)
+                + " • " + e.width + "×" + e.height
+                + (e.hasAudio ? " • audio" : ""), 12, AeDesign.MUTED, Typeface.NORMAL));
+        top.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+        ImageView more = AeDesign.iconButton(this, R.drawable.ic_settings, "Project menu", false);
+        AeDesign.press(more, () -> projectMenuFor(e.id));
+        top.addView(more, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        card.addView(top);
+
+        Button open = AeDesign.button(this, isActive ? "Continue Editing" : "Open Project", true);
+        AeDesign.press(open, () -> openProject(e.id));
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, dp(48));
+        blp.setMargins(0, dp(12), 0, 0);
+        card.addView(open, blp);
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(0, dp(10), 0, 0);
+        card.setLayoutParams(lp);
+        return card;
+    }
+
+    private void openProject(String id) {
+        if (library == null || id == null) return;
+        // Persist the current project before switching.
+        if (project != null && activeProjectId != null) library.saveProject(activeProjectId, project);
+        library.setActive(id);
+        activeProjectId = id;
+        project = library.loadActive();
+        draftPreset = project.exportPreset;
+        draftFps = project.fps;
+        draftFit = project.fitMode;
+        undoStack.clear();
+        redoStack.clear();
+        selected = -1;
+        showEditor();
+    }
+
+    private void projectMenuFor(String id) {
+        final String pid = id;
+        String[] ops = {"Open", "Rename", "Duplicate", "Delete", "Project Settings"};
+        new AlertDialog.Builder(this).setTitle("Project").setItems(ops, (d, w) -> {
+            if (w == 0) openProject(pid);
+            if (w == 1) renameProjectId(pid);
+            if (w == 2) {
+                String nid = library.duplicate(pid);
+                if (nid != null) { toast("Project duplicated"); showHome(); }
             }
-        });
-        frow.addView(fopen, new LinearLayout.LayoutParams(-2, dp(44)));
-        frameCard.addView(frow);
-        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(-1, -2);
-        flp.setMargins(0, dp(10), 0, 0);
-        root.addView(frameCard, flp);
+            if (w == 3) {
+                new AlertDialog.Builder(this)
+                        .setTitle("Delete project?")
+                        .setMessage("This cannot be undone.")
+                        .setPositiveButton("Delete", (dd, ww) -> {
+                            boolean wasActive = pid.equals(activeProjectId);
+                            library.delete(pid);
+                            if (wasActive) {
+                                activeProjectId = library.activeId();
+                                project = library.loadActive();
+                            }
+                            showHome();
+                        })
+                        .setNegativeButton("Cancel", null)
+                        .show();
+            }
+            if (w == 4) {
+                openProject(pid);
+                showCreateProject(true);
+            }
+        }).show();
+    }
+
+    private void renameProjectId(String id) {
+        EditProject p = library.loadById(id);
+        if (p == null) return;
+        final EditText e = new EditText(this);
+        e.setText(p.name);
+        e.setTextColor(AeDesign.TEXT);
+        e.setHintTextColor(AeDesign.MUTED);
+        e.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(10), AeDesign.STROKE, 1));
+        e.setPadding(dp(12), dp(10), dp(12), dp(10));
+        new AlertDialog.Builder(this).setTitle("Rename project").setView(e)
+                .setPositiveButton("Save", (d, w) -> {
+                    library.rename(id, e.getText().toString());
+                    if (id.equals(activeProjectId) && project != null) {
+                        project.name = e.getText().toString();
+                        saveProject(true);
+                    }
+                    showHome();
+                }).setNegativeButton("Cancel", null).show();
     }
 
     /** Prompt Library screen. Schema + storage are live; the library starts
@@ -485,63 +659,12 @@ public class MainActivity extends Activity {
         root.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
     }
 
-    private void emptyState() {
-        LinearLayout c = AeDesign.card(this);
-        c.setGravity(Gravity.CENTER);
-        TextView icon = label("No clips yet", 22, AeDesign.TEXT, Typeface.BOLD);
-        icon.setGravity(Gravity.CENTER);
-        c.addView(icon);
-        TextView b = label("Create your first video from images and make it move.", 14, AeDesign.MUTED, Typeface.NORMAL);
-        b.setGravity(Gravity.CENTER);
-        c.addView(b);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, 0, 1);
-        lp.setMargins(0, dp(20), 0, 0);
-        root.addView(c, lp);
-    }
-
-    private void projectCard(EditProject p) {
-        LinearLayout card = AeDesign.card(this);
-        card.setPadding(dp(18), dp(18), dp(18), dp(18));
-        LinearLayout top = row();
-        TextView thumb = label(String.format(Locale.US, "%d", p.clips.size()), 26, AeDesign.ACCENT, Typeface.BOLD);
-        thumb.setGravity(Gravity.CENTER);
-        thumb.setBackground(AeDesign.bg(AeDesign.SURFACE_2, dp(18), AeDesign.STROKE, 1));
-        top.addView(thumb, new LinearLayout.LayoutParams(dp(86), dp(72)));
-        LinearLayout info = col();
-        info.setPadding(dp(14), 0, 0, 0);
-        info.addView(label(p.name, 19, AeDesign.TEXT, Typeface.BOLD));
-        info.addView(label(p.clips.size() + " clips • " + fmt(p.totalDurationSec()) + " • " + p.width + "×" + p.height + " • " + p.fitMode.label, 13, AeDesign.MUTED, Typeface.NORMAL));
-        info.addView(label("Auto saved • " + (p.audioUri == null ? "no audio" : "audio linked"), 12, 0xff6f8ca4, Typeface.NORMAL));
-        top.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
-        ImageView more = AeDesign.iconButton(this, R.drawable.ic_settings, "Project menu", false);
-        AeDesign.press(more, () -> projectMenu());
-        top.addView(more, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        card.addView(top);
-        Button cont = AeDesign.button(this, "Continue Editing", true);
-        AeDesign.press(cont, () -> showEditor());
-        LinearLayout.LayoutParams lpbtn = new LinearLayout.LayoutParams(-1, dp(52));
-        lpbtn.setMargins(0, dp(16), 0, 0);
-        card.addView(cont, lpbtn);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.setMargins(0, dp(14), 0, 0);
-        root.addView(card, lp);
-    }
-
     private void projectMenu() {
-        String[] ops = {"Rename", "Duplicate", "Delete", "Project Settings"};
-        new AlertDialog.Builder(this).setTitle("Project").setItems(ops, (d, w) -> {
-            if (w == 0) renameProject();
-            if (w == 1) { project.name = project.name + " Copy"; saveProject(true); showHome(); }
-            if (w == 2) { project = new EditProject(); saveProject(true); showHome(); }
-            if (w == 3) showCreateProject(true);
-        }).show();
+        if (activeProjectId != null) projectMenuFor(activeProjectId);
     }
 
     private void renameProject() {
-        final EditText e = new EditText(this);
-        e.setText(project.name);
-        new AlertDialog.Builder(this).setTitle("Rename project").setView(e)
-                .setPositiveButton("Save", (d, w) -> { project.name = e.getText().toString(); saveProject(true); showHome(); }).show();
+        if (activeProjectId != null) renameProjectId(activeProjectId);
     }
 
     // ---------------------------------------------------------------- create
@@ -571,7 +694,25 @@ public class MainActivity extends Activity {
         addChoice(fps, "60 FPS", draftFps == 60, () -> draftFps = 60);
         root.addView(fps);
         Button create = AeDesign.button(this, settingsOnly ? "Apply Settings" : "Create Project", true);
-        AeDesign.press(create, () -> { if (!settingsOnly) project = new EditProject(); applyDraftToProject(); saveProject(true); showEditor(); });
+        AeDesign.press(create, () -> {
+            if (!settingsOnly) {
+                // Persist the current project before opening a brand-new one.
+                if (project != null && activeProjectId != null) {
+                    library.saveProject(activeProjectId, project);
+                }
+                EditProject fresh = new EditProject();
+                applyDraftTo(fresh);
+                activeProjectId = library.createNew(fresh);
+                project = fresh;
+                undoStack.clear();
+                redoStack.clear();
+                selected = -1;
+            } else {
+                applyDraftToProject();
+                saveProject(true);
+            }
+            showEditor();
+        });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(58));
         lp.setMargins(0, dp(20), 0, 0);
         root.addView(create, lp);
@@ -587,79 +728,124 @@ public class MainActivity extends Activity {
         parent.addView(v, lp);
     }
 
-    private void applyDraftToProject() {
+    private void applyDraftToProject() { applyDraftTo(project); }
+
+    private void applyDraftTo(EditProject p) {
+        if (p == null) return;
         int h = draftQuality;
         int w = Math.round(h * draftPreset.width / (float) draftPreset.height);
         if (draftPreset == ExportPreset.PORTRAIT_9_16) { w = 1080; h = draftQuality == 2160 ? 3840 : 1920; }
         else if (draftPreset == ExportPreset.SQUARE_1_1) { w = h = draftQuality; }
         else if (draftPreset == ExportPreset.PORTRAIT_4_5) { w = 1080; h = 1350; }
         else if (draftPreset == ExportPreset.CLASSIC_4_3) { w = 1440; h = 1080; }
-        project.exportPreset = draftPreset;
-        project.width = w;
-        project.height = h;
-        project.fps = draftFps;
-        project.fitMode = draftFit;
+        p.exportPreset = draftPreset;
+        p.width = w;
+        p.height = h;
+        p.fps = draftFps;
+        p.fitMode = draftFit;
     }
 
     // ---------------------------------------------------------------- editor
 
+    /**
+     * Editor layout (stable preview — never collapses):
+     * <pre>
+     *  Header
+     *  LARGE PREVIEW  (explicit height floor; weight fills leftover)
+     *  Transport
+     *  Compact timeline (fixed height — zoom does NOT resize preview)
+     *  Single-row tool strip
+     *  Bounded panel host (max height; scrolls inside)
+     * </pre>
+     * Motion/Formula/Effects/Transitions open as floating {@link PanelSheet}
+     * overlays and never shrink the monitor.
+     */
     private void showEditor() {
         screen = "editor";
         base();
+        // Editor uses slightly tighter side padding so the monitor is wider.
+        root.setPadding(dp(10), root.getPaddingTop(), dp(10), root.getPaddingBottom());
         tiles.clear();
         transitionScopeClip = -1;
+        sheet = null; // rebuild sheet against the new decor after setContentView
 
         // --- header: back | title+save | undo | redo | EXPORT
         LinearLayout header = row();
         header.setGravity(Gravity.CENTER_VERTICAL);
         ImageView back = AeDesign.iconButton(this, R.drawable.ic_back, "Back", false);
         AeDesign.press(back, () -> showHome());
-        header.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        header.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
         LinearLayout title = col();
-        title.addView(label(project.name, 17, AeDesign.TEXT, Typeface.BOLD));
+        title.addView(label(project.name, 16, AeDesign.TEXT, Typeface.BOLD));
         saveStatus = label("Saved", 11, 0xff7ce0a2, Typeface.NORMAL);
         title.addView(saveStatus);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         ImageView undo = AeDesign.iconButton(this, R.drawable.ic_undo, "Undo", false);
         AeDesign.press(undo, () -> undo());
-        header.addView(undo, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        header.addView(undo, new LinearLayout.LayoutParams(dp(40), dp(40)));
         ImageView redo = AeDesign.iconButton(this, R.drawable.ic_redo, "Redo", false);
         AeDesign.press(redo, () -> redo());
-        header.addView(redo, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        header.addView(redo, new LinearLayout.LayoutParams(dp(40), dp(40)));
         Button export = AeDesign.button(this, "EXPORT", true);
         AeDesign.press(export, () -> showExportScreen());
-        header.addView(export, new LinearLayout.LayoutParams(-2, dp(44)));
+        header.addView(export, new LinearLayout.LayoutParams(-2, dp(40)));
         root.addView(header);
 
-        // --- monitor: aspect-correct centered preview (single source of truth)
+        // --- monitor: LARGE stable preview (single source of truth)
+        // ROOT CAUSE: timeline (≈280dp) + multi-row GridLayout tools + unbounded
+        // panelHost were all WRAP_CONTENT siblings of a weight=1 monitor. LinearLayout
+        // allocates wrap_content first → leftover height near-zero → PreviewView collapsed.
+        // FIX: EXPLICIT monitor height (~48% of screen) so chrome can never steal it.
+        // Bottom chrome lives in a weight=1 vertical ScrollView — if tools/panel are
+        // tall, THEY scroll; the preview stays put. Zoom only changes timeline px/sec.
         monitor = new MonitorLayout(this);
-        monitor.setPadding(dp(8), dp(8), dp(8), dp(8));
-        monitor.setBackground(AeDesign.bg(0xff03070d, dp(22), 0x22334a68, 1));
+        monitor.setPadding(dp(6), dp(6), dp(6), dp(6));
+        monitor.setBackground(AeDesign.bg(0xff03070d, dp(18), 0x22334a68, 1));
         monitor.setRatio(project.width / (float) Math.max(1, project.height));
+        int screenH = getResources().getDisplayMetrics().heightPixels;
+        int screenW = getResources().getDisplayMetrics().widthPixels;
+        // Dominant preview: ~48% of screen height, clamped to a usable band.
+        // Portrait 9:16 canvas still fits aspect-correct inside this box (letterboxed).
+        int monH = Math.max(dp(200), Math.min(dp(520), (int) (screenH * 0.48f)));
+        // Never taller than ~92% of width-derived box for landscape-ish screens.
+        monH = Math.min(monH, Math.max(dp(200), (int) (screenW * 1.15f)));
+        monitor.setMinPreviewHeightPx(monH);
+        monitor.setMinimumHeight(monH);
         preview = new PreviewView(this);
         preview.project = project;
         monitor.addView(preview, new MonitorLayout.LayoutParams(-1, -1));
-        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(-1, 0, 1);
-        mlp.setMargins(0, dp(10), 0, dp(8));
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(-1, monH);
+        mlp.setMargins(0, dp(6), 0, dp(2));
+        // Explicit height, weight 0 — siblings cannot collapse this.
         root.addView(monitor, mlp);
 
-        // --- transport: play/pause | moving time | meta
+        // --- bottom chrome (transport + timeline + tools + panel) fills leftover and scrolls
+        ScrollView chromeScroll = new ScrollView(this);
+        chromeScroll.setFillViewport(true);
+        chromeScroll.setVerticalScrollBarEnabled(false);
+        chromeScroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        LinearLayout chrome = col();
+        chromeScroll.addView(chrome, new FrameLayout.LayoutParams(-1, -2));
+        root.addView(chromeScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        // --- transport: play/pause | time | meta (compact single row)
         LinearLayout player = row();
         player.setGravity(Gravity.CENTER_VERTICAL);
         playButton = AeDesign.iconButton(this, R.drawable.ic_play, "Play", true);
         AeDesign.press(playButton, () -> togglePlay());
-        player.addView(playButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        playLabel = label("00:00 / " + fmt(project.totalDurationSec()), 16, AeDesign.TEXT, Typeface.BOLD);
-        playLabel.setPadding(dp(12), 0, 0, 0);
+        player.addView(playButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        playLabel = label("00:00 / " + fmt(project.totalDurationSec()), 14, AeDesign.TEXT, Typeface.BOLD);
+        playLabel.setPadding(dp(8), 0, 0, 0);
         player.addView(playLabel);
-        metaLabel = label(project.clips.size() + " clips • " + project.fps + " FPS • " + project.fitMode.label, 12, AeDesign.MUTED, Typeface.NORMAL);
-        metaLabel.setPadding(dp(10), 0, 0, 0);
+        metaLabel = label(project.clips.size() + " clips • " + project.fps + " FPS • " + project.fitMode.label,
+                11, AeDesign.MUTED, Typeface.NORMAL);
+        metaLabel.setPadding(dp(8), 0, 0, 0);
         player.addView(metaLabel, new LinearLayout.LayoutParams(0, -2, 1));
-        root.addView(player, new LinearLayout.LayoutParams(-1, -2));
+        chrome.addView(player, new LinearLayout.LayoutParams(-1, -2));
 
-        // --- timeline: 4 lanes (ruler / clips / waveform / overlays), one px-per-second geometry
+        // --- timeline: COMPACT fixed height (zoom only changes px-per-sec, never preview size)
         LinearLayout tbox = AeDesign.card(this);
-        tbox.setPadding(dp(8), dp(6), dp(8), dp(6));
+        tbox.setPadding(dp(6), dp(4), dp(6), dp(4));
         LinearLayout tHead = row();
         tHead.setGravity(Gravity.CENTER_VERTICAL);
         tHead.addView(iconButton(R.drawable.ic_zoom_out, () -> setTlZoom(tlZoom / 1.25f)));
@@ -669,73 +855,101 @@ public class MainActivity extends Activity {
         tHead.addView(zIn, zilp);
         ImageView sp = iconButton(R.drawable.ic_split, this::splitAtPlayhead);
         LinearLayout.LayoutParams splp = new LinearLayout.LayoutParams(-2, -2);
-        splp.leftMargin = dp(10);
+        splp.leftMargin = dp(8);
         tHead.addView(sp, splp);
-        tHead.addView(label("Split cuts the clip under the playhead into two.", 11, AeDesign.MUTED, Typeface.NORMAL),
+        tHead.addView(label("Timeline", 11, AeDesign.MUTED, Typeface.NORMAL),
                 new LinearLayout.LayoutParams(0, -2, 1));
         tbox.addView(tHead, new LinearLayout.LayoutParams(-1, -2));
         ruler = new TimelineRulerView(this);
         ruler.setProject(project);
         ruler.setZoom(tlZoom);
         timelineScroll = new HorizontalScrollView(this);
+        timelineScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout scrollContent = col();
         float pad0 = TimelineRulerView.PAD_DP * getResources().getDisplayMetrics().density;
         scrollContent.setPadding((int) pad0, 0, (int) pad0, 0);
         ruler.setLayoutParams(new LinearLayout.LayoutParams(
-                (int) (TimelineRulerView.contentWidthPx(this, project, tlZoom) - 2 * pad0), dp(34)));
+                (int) (TimelineRulerView.contentWidthPx(this, project, tlZoom) - 2 * pad0), dp(22)));
         timeline = row();
         waveTrack = new WaveformTrackView(this);
         ovlTrack = new OverlayTrackView(this);
         scrollContent.addView(ruler);
-        scrollContent.addView(timeline, new LinearLayout.LayoutParams(-1, dp(78)));
-        scrollContent.addView(waveTrack, new LinearLayout.LayoutParams(-1, dp(38)));
-        scrollContent.addView(ovlTrack, new LinearLayout.LayoutParams(-1, dp(44)));
+        // Clip lane + compact waveform/overlay — total body fixed, independent of zoom.
+        scrollContent.addView(timeline, new LinearLayout.LayoutParams(-1, dp(56)));
+        scrollContent.addView(waveTrack, new LinearLayout.LayoutParams(-1, dp(22)));
+        scrollContent.addView(ovlTrack, new LinearLayout.LayoutParams(-1, dp(22)));
         timelineScroll.addView(scrollContent);
-        tbox.addView(timelineScroll, new LinearLayout.LayoutParams(-1, dp(202)));
+        tbox.addView(timelineScroll, new LinearLayout.LayoutParams(-1, dp(122)));
         ovlTrack.setOnSelect(ix -> { selectedOverlay = ix; if (panelHost != null) overlaysPanel(); });
-        LinearLayout tracks = col();
+        // Track status as one compact line (was 3 separate rows that ate preview height).
         project.migrateLegacyAudio();
-        tracks.addView(trackLabel("Audio track",
-                project.audioTracks.isEmpty() ? "no audio"
-                        : audioTrackSummary(project.primaryAudio()),
-                !project.audioTracks.isEmpty()));
-        tracks.addView(trackLabel("Text track", project.texts.size() + " text block(s)", false));
-        tracks.addView(trackLabel("Overlay track", project.overlays.size() + " layer(s)", !project.overlays.isEmpty()));
-        tbox.addView(tracks);
-        root.addView(tbox, new LinearLayout.LayoutParams(-1, -2));
+        String trackLine = (project.audioTracks.isEmpty() ? "no audio" : audioTrackSummary(project.primaryAudio()))
+                + "  ·  " + project.texts.size() + " text  ·  " + project.overlays.size() + " overlay";
+        tbox.addView(trackLabel("Tracks", trackLine, !project.audioTracks.isEmpty() || !project.overlays.isEmpty()));
+        LinearLayout.LayoutParams tboxLp = new LinearLayout.LayoutParams(-1, -2);
+        tboxLp.topMargin = dp(4);
+        chrome.addView(tbox, tboxLp);
 
-        // --- tools: compact icon toolbar (every tool is real; no fakes)
-        GridLayout tools = new GridLayout(this);
-        tools.setColumnCount(4);
-        addToolTile(tools, "images", R.drawable.ic_images, "Images", () -> { openTool("images"); pickImages(); });
-        addToolTile(tools, "motion", R.drawable.ic_motion, "Motion", () -> motionPanel());
-        addToolTile(tools, "formula", R.drawable.ic_formula, "Formula", () -> formulaBatchPanel());
-        addToolTile(tools, "transition", R.drawable.ic_transition, "Transition", () -> transitionPanel());
-        addToolTile(tools, "duration", R.drawable.ic_timer, "Duration", () -> durationBatchPanel());
-        addToolTile(tools, "text", R.drawable.ic_text, "Text", () -> textStudio());
-        addToolTile(tools, "layers", R.drawable.ic_layer, "Layers", () -> overlaysPanel());
-        addToolTile(tools, "audio", R.drawable.ic_audio, "Audio", () -> audioPanel());
-        addToolTile(tools, "canvas", R.drawable.ic_canvas, "Canvas", () -> canvasPanel());
-        addToolTile(tools, "filters", R.drawable.ic_filters, "Filters", () -> filtersPanel());
-        addToolTile(tools, "effects", R.drawable.ic_effects, "Effects", () -> effectsPanel());
-        addToolTile(tools, "adjust", R.drawable.ic_adjust, "Adjust", () -> adjustPanel());
-        addToolTile(tools, "autoedit", R.drawable.ic_autoedit, "Auto Edit", () -> autoEditPanel());
+        // --- tools: SINGLE horizontal row (was 4-col GridLayout → multi-row height steal)
+        LinearLayout toolsRow = row();
+        toolsRow.setGravity(Gravity.CENTER_VERTICAL);
+        tileCol = 0;
+        addToolTileRow(toolsRow, "images", R.drawable.ic_images, "Images", () -> { openTool("images"); showImageImportMenu(); });
+        addToolTileRow(toolsRow, "motion", R.drawable.ic_motion, "Motion", () -> motionPanel());
+        addToolTileRow(toolsRow, "formula", R.drawable.ic_formula, "Formula", () -> formulaBatchPanel());
+        addToolTileRow(toolsRow, "transition", R.drawable.ic_transition, "Transition", () -> transitionPanel());
+        addToolTileRow(toolsRow, "duration", R.drawable.ic_timer, "Duration", () -> durationBatchPanel());
+        addToolTileRow(toolsRow, "text", R.drawable.ic_text, "Text", () -> textStudio());
+        addToolTileRow(toolsRow, "layers", R.drawable.ic_layer, "Layers", () -> overlaysPanel());
+        addToolTileRow(toolsRow, "audio", R.drawable.ic_audio, "Audio", () -> audioPanel());
+        addToolTileRow(toolsRow, "canvas", R.drawable.ic_canvas, "Canvas", () -> canvasPanel());
+        addToolTileRow(toolsRow, "filters", R.drawable.ic_filters, "Filters", () -> filtersPanel());
+        addToolTileRow(toolsRow, "effects", R.drawable.ic_effects, "Effects", () -> effectsPanel());
+        addToolTileRow(toolsRow, "adjust", R.drawable.ic_adjust, "Adjust", () -> adjustPanel());
+        addToolTileRow(toolsRow, "autoedit", R.drawable.ic_autoedit, "Auto Edit", () -> autoEditPanel());
         HorizontalScrollView toolsScroll = new HorizontalScrollView(this);
         toolsScroll.setHorizontalScrollBarEnabled(false);
-        toolsScroll.addView(tools, new FrameLayout.LayoutParams(-2, -2));
-        root.addView(toolsScroll, new LinearLayout.LayoutParams(-1, -2));
+        toolsScroll.setFillViewport(false);
+        toolsScroll.addView(toolsRow, new FrameLayout.LayoutParams(-2, -2));
+        LinearLayout.LayoutParams toolsLp = new LinearLayout.LayoutParams(-1, -2);
+        toolsLp.topMargin = dp(4);
+        chrome.addView(toolsScroll, toolsLp);
 
-        // --- panel host
-        ScrollView ps = new ScrollView(this);
-        ps.setFillViewport(false);
+        // --- panel host: in-tree panels (Duration/Layers/Audio/clip). Heavy tools
+        // (Motion/Formula/Effects/Transitions) use PanelSheet overlay and never land here.
+        // Host is wrap_content inside chromeScroll — grows downward, never upward into preview.
+        // No nested ScrollView (chromeScroll already scrolls the whole bottom chrome).
         panelHost = col();
-        ps.addView(panelHost);
-        root.addView(ps, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams phLp = new LinearLayout.LayoutParams(-1, -2);
+        phLp.topMargin = dp(4);
+        chrome.addView(panelHost, phLp);
 
         buildTimeline(true);
         showClipPanel();
         wirePreview();
         bindAudio();
+        root.post(this::ensureMonitorDominant);
+    }
+
+    /**
+     * Safety net after first layout: if the monitor was still squeezed (rare OEM
+     * LinearLayout quirks / inset changes), force the explicit floor height again.
+     * Timeline zoom and tool sheets never call this — only editor open / canvas change.
+     */
+    private void ensureMonitorDominant() {
+        if (monitor == null || root == null) return;
+        int floor = monitor.getMinPreviewHeightPx();
+        if (floor <= 0) return;
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) monitor.getLayoutParams();
+        if (lp == null) return;
+        int h = monitor.getHeight();
+        // Keep explicit height; never fall back to weight=1 (that was the collapse path).
+        if (lp.height != floor || lp.weight != 0f || (h > 0 && h < floor - dp(4))) {
+            lp.height = floor;
+            lp.weight = 0f;
+            monitor.setLayoutParams(lp);
+            monitor.requestLayout();
+        }
     }
 
     private void wirePreview() {
@@ -776,6 +990,20 @@ public class MainActivity extends Activity {
         lp.columnSpec = GridLayout.spec(tileCol % 4);
         lp.setMargins(dp(2), dp(2), dp(2), dp(2));
         tileCol++;
+        parent.addView(t, lp);
+        tiles.put(tag, t);
+    }
+
+    /**
+     * Single-row toolbar tile — fixed compact height so tools never wrap into
+     * multi-row GridLayout columns that steal monitor height.
+     */
+    private void addToolTileRow(LinearLayout parent, String tag, int icon, String label, Runnable onTap) {
+        ToolTile t = new ToolTile(this, icon, label, onTap);
+        // Tighter padding for the horizontal strip.
+        t.setPadding(dp(2), dp(3), dp(2), dp(3));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(64), -2);
+        lp.setMargins(dp(2), 0, dp(2), 0);
         parent.addView(t, lp);
         tiles.put(tag, t);
     }
@@ -966,7 +1194,7 @@ public class MainActivity extends Activity {
                     }
                     return false;
                 });
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp((int) (c.durationSec * TimelineRulerView.VEL_DP)), dp(78));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp((int) (c.durationSec * TimelineRulerView.VEL_DP)), dp(56));
                 lp.leftMargin = dp((int) TimelineRulerView.GAP_DP);
                 timeline.addView(v, lp);
                 chips.add(v);
@@ -1049,10 +1277,10 @@ public class MainActivity extends Activity {
             lp.width = Math.max(dp(28), (int) (project.clips.get(idx).durationSec * pps));
             v.requestLayout();
         }
-        // keep junction icons centred on the 78dp clip lane
+        // keep junction icons centred on the compact 56dp clip lane
         for (ImageView j : junctions) {
             LinearLayout.LayoutParams jlp = (LinearLayout.LayoutParams) j.getLayoutParams();
-            jlp.topMargin = (dp(78) - dp(28)) / 2;
+            jlp.topMargin = (dp(56) - dp(28)) / 2;
         }
     }
 
@@ -2281,6 +2509,8 @@ public class MainActivity extends Activity {
         if (monitor != null) monitor.setRatio(project.width / (float) Math.max(1, project.height));
         if (metaLabel != null) metaLabel.setText(project.clips.size() + " clips • " + project.fps + " FPS • " + project.fitMode.label);
         if (preview != null) preview.invalidate();
+        // Canvas ratio change must not collapse the monitor — re-assert floor after layout.
+        if (root != null) root.post(this::ensureMonitorDominant);
     }
 
     // ---------------------------------------------------------------- playback + audio
@@ -2342,6 +2572,27 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- media pickers
 
     /**
+     * Images tool entry: Gallery / Device Files / Import ZIP.
+     * Existing gallery picker is preserved; ZIP is additive.
+     */
+    private void showImageImportMenu() {
+        String[] ops = {
+                "🖼  Gallery",
+                "📁  Device Files",
+                "📦  Import ZIP"
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("Add Images")
+                .setItems(ops, (d, w) -> {
+                    if (w == 0) pickImages();
+                    else if (w == 1) pickDeviceImageFiles();
+                    else if (w == 2) pickZipBatch();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /**
      * Images come from the system PHOTO PICKER on Android 13+, which needs no
      * runtime permission at all and shows the user's real gallery, albums and
      * recents (spec §21, §22). Older devices fall back to ACTION_GET_CONTENT,
@@ -2379,6 +2630,46 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** SAF document picker for image files on device storage (no legacy storage perm). */
+    private void pickDeviceImageFiles() {
+        try {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("image/*");
+            i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(i, PICK_DEVICE_FILES);
+        } catch (Exception e) {
+            Log.e(TAG, "Device file picker failed", e);
+            toast("Could not open the file picker");
+        }
+    }
+
+    /**
+     * Multi-ZIP picker via Storage Access Framework. User can select 1..N
+     * ZIP files at once; they are treated as ONE combined image batch.
+     * SAF does not require legacy storage permissions.
+     */
+    private void pickZipBatch() {
+        try {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("application/zip");
+            // Also accept common ZIP MIME variants some providers use.
+            i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                    "application/zip",
+                    "application/x-zip-compressed",
+                    "application/octet-stream"
+            });
+            i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(Intent.createChooser(i, "Select ZIP file(s)"), PICK_ZIP_BATCH);
+        } catch (Exception e) {
+            Log.e(TAG, "ZIP picker failed", e);
+            toast("Could not open the ZIP picker");
+        }
+    }
+
     /** Audio uses the system document picker (the photo picker is images only). */
     private void pickAudio() {
         try {
@@ -2405,11 +2696,8 @@ public class MainActivity extends Activity {
             }
             return;
         }
-        if (req == PICK_IMAGES) {
-            ArrayList<Uri> uris = new ArrayList<>();
-            if (data.getClipData() != null) {
-                for (int k = 0; k < data.getClipData().getItemCount(); k++) uris.add(data.getClipData().getItemAt(k).getUri());
-            } else if (data.getData() != null) uris.add(data.getData());
+        if (req == PICK_IMAGES || req == PICK_DEVICE_FILES) {
+            ArrayList<Uri> uris = collectUris(data);
             if (uris.isEmpty()) return;
             pushUndo();
             int before = project.clips.size();
@@ -2427,6 +2715,18 @@ public class MainActivity extends Activity {
             saveProject(true);
             showEditor();
             toast("Imported " + (project.clips.size() - before) + " image(s)");
+            return;
+        }
+        if (req == PICK_ZIP_BATCH) {
+            ArrayList<Uri> uris = collectUris(data);
+            if (uris.isEmpty()) { toast("No ZIP selected"); return; }
+            ArrayList<String> names = new ArrayList<>();
+            for (Uri u : uris) {
+                try { getContentResolver().takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) {}
+                names.add(displayNameOf(u));
+            }
+            startZipImport(uris, names);
+            return;
         }
         if (req == PICK_OVERLAY_IMAGE && data.getData() != null) {
             Uri u = data.getData();
@@ -3096,11 +3396,307 @@ public class MainActivity extends Activity {
     private TextView label(String s, int sp, int color, int style) { return AeDesign.text(this, s, sp, color, style); }
 
     private void saveProject(boolean visible) {
-        if (store != null && project != null) {
-            if (visible && saveStatus != null) saveStatus.setText("Saving...");
-            store.save(project);
-            if (visible && saveStatus != null) handler.postDelayed(() -> saveStatus.setText("Saved"), 350);
+        if (project == null) return;
+        if (visible && saveStatus != null) saveStatus.setText("Saving...");
+        // Multi-project library is the source of truth; also mirror to the
+        // legacy ProjectStore "current" slot so export / older paths keep working.
+        if (library != null && activeProjectId != null) library.saveProject(activeProjectId, project);
+        else if (store != null) store.save(project);
+        if (visible && saveStatus != null) handler.postDelayed(() -> saveStatus.setText("Saved"), 350);
+    }
+
+    // ============================================================ ZIP import
+
+    private ArrayList<Uri> collectUris(Intent data) {
+        ArrayList<Uri> uris = new ArrayList<>();
+        if (data == null) return uris;
+        if (data.getClipData() != null) {
+            for (int k = 0; k < data.getClipData().getItemCount(); k++) {
+                Uri u = data.getClipData().getItemAt(k).getUri();
+                if (u != null) uris.add(u);
+            }
+        } else if (data.getData() != null) {
+            uris.add(data.getData());
         }
+        return uris;
+    }
+
+    private String displayNameOf(Uri u) {
+        String name = null;
+        try (Cursor c = getContentResolver().query(u, null, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                if (idx >= 0) name = c.getString(idx);
+            }
+        } catch (Exception ignored) {}
+        if (name == null || name.isEmpty()) {
+            String p = u.getLastPathSegment();
+            name = p == null ? "archive.zip" : p;
+        }
+        return name;
+    }
+
+    /** Kicks off background multi-ZIP scan+extract with a cancelable progress UI. */
+    private void startZipImport(List<Uri> uris, List<String> names) {
+        screen = "zip_import";
+        pendingZipResult = null;
+        zipKeepDuplicates = true;
+        zipUnnumberedPolicy = UnnumberedPolicy.SKIP;
+        if (zipImporter != null) zipImporter.cancel();
+        zipImporter = new ZipBatchImporter(this);
+        showZipProgressUi(uris.size());
+
+        final List<Uri> zipUris = new ArrayList<>(uris);
+        final List<String> zipNames = new ArrayList<>(names);
+        final ZipBatchImporter importer = zipImporter;
+        bg.execute(() -> {
+            BatchResult result = importer.importZips(zipUris, zipNames, p ->
+                    handler.post(() -> updateZipProgress(p)));
+            handler.post(() -> {
+                dismissZipProgress();
+                if (result.cancelled) {
+                    toast("ZIP import cancelled");
+                    if ("zip_import".equals(screen)) showEditor();
+                    return;
+                }
+                if (result.error != null) {
+                    new AlertDialog.Builder(this)
+                            .setTitle("ZIP Import")
+                            .setMessage(result.error)
+                            .setPositiveButton("OK", (d, w) -> showEditor())
+                            .show();
+                    return;
+                }
+                pendingZipResult = result;
+                showZipSummary(result);
+            });
+        });
+    }
+
+    private void showZipProgressUi(int zipCount) {
+        LinearLayout box = col();
+        box.setPadding(dp(20), dp(16), dp(20), dp(8));
+        box.addView(label("📦  Importing ZIP...", 18, AeDesign.TEXT, Typeface.BOLD));
+        box.addView(label(zipCount + " archive" + (zipCount == 1 ? "" : "s") + " selected", 13, AeDesign.MUTED, Typeface.NORMAL));
+        zipProgressLabel = label("Scanning files...", 14, AeDesign.MUTED, Typeface.NORMAL);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(-1, -2);
+        tlp.topMargin = dp(12);
+        box.addView(zipProgressLabel, tlp);
+        zipProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        zipProgressBar.setMax(100);
+        zipProgressBar.setProgress(0);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, dp(10));
+        blp.topMargin = dp(10);
+        box.addView(zipProgressBar, blp);
+
+        zipProgressDialog = new AlertDialog.Builder(this)
+                .setView(box)
+                .setCancelable(false)
+                .setNegativeButton("Cancel", (d, w) -> {
+                    if (zipImporter != null) zipImporter.cancel();
+                    toast("Cancelling…");
+                })
+                .create();
+        try { zipProgressDialog.show(); } catch (Exception e) { Log.e(TAG, "progress dialog", e); }
+    }
+
+    private void updateZipProgress(ZipBatchModels.Progress p) {
+        if (zipProgressLabel != null) {
+            String line = p.stage;
+            if (p.total > 0) line += "\n" + p.done + " / " + p.total;
+            line += "\nImages found: " + p.imagesFound;
+            zipProgressLabel.setText(line);
+        }
+        if (zipProgressBar != null && p.total > 0) {
+            int pct = Math.max(1, Math.min(99, (int) (100f * p.done / (float) p.total)));
+            zipProgressBar.setProgress(pct);
+        }
+    }
+
+    private void dismissZipProgress() {
+        try { if (zipProgressDialog != null && zipProgressDialog.isShowing()) zipProgressDialog.dismiss(); } catch (Exception ignored) {}
+        zipProgressDialog = null;
+        zipProgressLabel = null;
+        zipProgressBar = null;
+    }
+
+    /**
+     * Premium dark summary screen before timeline insertion.
+     * Missing serials are a warning only — never invent blank clips.
+     */
+    private void showZipSummary(BatchResult r) {
+        screen = "zip_summary";
+        base();
+        addHeader("ZIP Batch Import", "Numeric serial order • combined archives", () -> {
+            pendingZipResult = null;
+            showEditor();
+        });
+
+        ScrollView sv = new ScrollView(this);
+        LinearLayout body = col();
+
+        // Hero stats card
+        LinearLayout hero = AeDesign.card(this);
+        hero.addView(label("ZIP BATCH IMPORT", 12, AeDesign.MUTED, Typeface.BOLD));
+        LinearLayout stats = row();
+        stats.setPadding(0, dp(8), 0, dp(4));
+        stats.addView(statBlock("📦", r.zipCount + "", "ZIP FILES"), new LinearLayout.LayoutParams(0, -2, 1));
+        stats.addView(statBlock("🖼", r.imagesFound + "", "IMAGES"), new LinearLayout.LayoutParams(0, -2, 1));
+        hero.addView(stats);
+        if (r.serialMin >= 0) {
+            hero.addView(label("SERIAL ORDER", 12, AeDesign.MUTED, Typeface.BOLD));
+            TextView range = label(r.serialMin + "  ────────  " + r.serialMax, 22, AeDesign.ACCENT, Typeface.BOLD);
+            range.setGravity(Gravity.CENTER);
+            hero.addView(range);
+            hero.addView(label("Order: Numeric Serial  ·  " + r.ordered.size() + " numbered"
+                    + (r.unnumberedCount > 0 ? "  ·  " + r.unnumberedCount + " unnumbered" : ""),
+                    12, AeDesign.MUTED, Typeface.NORMAL));
+        }
+        body.addView(hero, cardLp(0));
+
+        // Warnings
+        if (!r.missing.isEmpty()) {
+            body.addView(warnCard("⚠  Missing Serial",
+                    formatMissing(r.missing)
+                            + "\n\nThe timeline will continue directly across the gap. No blank clips will be created."),
+                    cardLp(10));
+        }
+        if (!r.duplicateSerials.isEmpty()) {
+            body.addView(warnCard("⚠  Duplicate Serial",
+                    "Serials shared by more than one image: " + joinInts(r.duplicateSerials, 12)
+                            + "\n\nKeep Both preserves every image (ZIP order)."),
+                    cardLp(10));
+            LinearLayout dupRow = row();
+            addChoice(dupRow, zipKeepDuplicates ? "✓ Keep Both" : "Keep Both", zipKeepDuplicates, () -> {
+                zipKeepDuplicates = true; showZipSummary(r);
+            });
+            addChoice(dupRow, !zipKeepDuplicates ? "✓ First Only" : "First Only", !zipKeepDuplicates, () -> {
+                zipKeepDuplicates = false; showZipSummary(r);
+            });
+            body.addView(dupRow);
+        }
+        if (r.unnumberedCount > 0) {
+            body.addView(warnCard("⚠  Unnumbered Images",
+                    r.unnumberedCount + " image" + (r.unnumberedCount == 1 ? " has" : "s have")
+                            + " no serial number and will not be mixed into the numbered sequence."),
+                    cardLp(10));
+            LinearLayout urow = row();
+            addChoice(urow, zipUnnumberedPolicy == UnnumberedPolicy.SKIP ? "✓ Skip" : "Skip",
+                    zipUnnumberedPolicy == UnnumberedPolicy.SKIP, () -> {
+                        zipUnnumberedPolicy = UnnumberedPolicy.SKIP; showZipSummary(r);
+                    });
+            addChoice(urow, zipUnnumberedPolicy == UnnumberedPolicy.APPEND ? "✓ Append at End" : "Append at End",
+                    zipUnnumberedPolicy == UnnumberedPolicy.APPEND, () -> {
+                        zipUnnumberedPolicy = UnnumberedPolicy.APPEND; showZipSummary(r);
+                    });
+            body.addView(urow);
+        }
+
+        if (!r.hasProblems()) {
+            LinearLayout ok = AeDesign.card(this);
+            ok.addView(label("✓  Ready to Import", 16, 0xff7ce0a2, Typeface.BOLD));
+            ok.addView(label(r.zipCount + " ZIP  ·  " + r.imagesFound + " images  ·  serial "
+                    + r.serialMin + " → " + r.serialMax, 13, AeDesign.MUTED, Typeface.NORMAL));
+            body.addView(ok, cardLp(10));
+        }
+
+        if (r.invalidImage > 0 || r.skippedNonImage > 0) {
+            body.addView(label("Skipped non-images: " + r.skippedNonImage
+                    + "  ·  Invalid images: " + r.invalidImage, 12, AeDesign.MUTED, Typeface.NORMAL));
+        }
+
+        body.addView(label("Clips append to the current timeline. One Undo removes the whole batch.",
+                12, AeDesign.MUTED, Typeface.NORMAL));
+
+        sv.addView(body);
+        root.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        LinearLayout bar = row();
+        Button cancel = AeDesign.button(this, "CANCEL", false);
+        AeDesign.press(cancel, () -> { pendingZipResult = null; showEditor(); });
+        bar.addView(cancel, new LinearLayout.LayoutParams(0, dp(54), 1));
+        Button add = AeDesign.button(this, "ADD TO TIMELINE", true);
+        AeDesign.press(add, () -> commitZipImport());
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(0, dp(54), 1.4f);
+        alp.leftMargin = dp(10);
+        bar.addView(add, alp);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, -2);
+        blp.topMargin = dp(10);
+        root.addView(bar, blp);
+    }
+
+    private LinearLayout.LayoutParams cardLp(int top) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(0, dp(top), 0, 0);
+        return lp;
+    }
+
+    private LinearLayout statBlock(String emoji, String value, String caption) {
+        LinearLayout c = col();
+        c.setGravity(Gravity.CENTER);
+        TextView e = label(emoji + "  " + value, 22, AeDesign.TEXT, Typeface.BOLD);
+        e.setGravity(Gravity.CENTER);
+        c.addView(e);
+        TextView cap = label(caption, 11, AeDesign.MUTED, Typeface.BOLD);
+        cap.setGravity(Gravity.CENTER);
+        c.addView(cap);
+        return c;
+    }
+
+    private LinearLayout warnCard(String title, String body) {
+        LinearLayout c = AeDesign.card(this);
+        c.setBackground(AeDesign.bg(0xff1a1420, dp(22), 0x66ffc84d, 1));
+        c.addView(label(title, 15, 0xffffc84d, Typeface.BOLD));
+        c.addView(label(body, 13, AeDesign.MUTED, Typeface.NORMAL));
+        return c;
+    }
+
+    private String formatMissing(List<Integer> missing) {
+        if (missing == null || missing.isEmpty()) return "None";
+        if (missing.size() == 1) return "Serial " + missing.get(0) + " is missing.";
+        return "Missing: " + joinInts(missing, 16);
+    }
+
+    private String joinInts(List<Integer> vals, int maxShow) {
+        StringBuilder sb = new StringBuilder();
+        int n = Math.min(vals.size(), maxShow);
+        for (int i = 0; i < n; i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(vals.get(i));
+        }
+        if (vals.size() > maxShow) sb.append(" … (+").append(vals.size() - maxShow).append(" more)");
+        return sb.toString();
+    }
+
+    /**
+     * Commits the ZIP batch as ONE undo entry. Appends real image clips only —
+     * never invents blanks for missing serials. Imported files live under
+     * app-controlled storage so they survive project reopen / ZIP deletion.
+     */
+    private void commitZipImport() {
+        BatchResult r = pendingZipResult;
+        if (r == null) { showEditor(); return; }
+        List<ReadyImage> finalOrder = ZipBatchModels.finalizeOrder(r, zipKeepDuplicates, zipUnnumberedPolicy);
+        if (finalOrder.isEmpty()) {
+            toast("Nothing to add");
+            return;
+        }
+        pushUndo(); // ONE undo for the whole batch
+        int before = project.clips.size();
+        for (ReadyImage img : finalOrder) {
+            try {
+                TimelineClip clip = new TimelineClip(img.fileUri, project.clips.size() + 1, formulas.defaultFormula());
+                clip.setDurationMs(5000L);
+                project.clips.add(clip);
+            } catch (Exception e) {
+                Log.e(TAG, "ZIP clip failed: " + img.fileUri, e);
+            }
+        }
+        project.renumber();
+        pendingZipResult = null;
+        saveProject(true);
+        showEditor();
+        toast("Added " + (project.clips.size() - before) + " image(s) from ZIP");
     }
 
     private String fmt(float sec) { int s = Math.round(sec); return String.format(Locale.US, "%02d:%02d", s / 60, s % 60); }
