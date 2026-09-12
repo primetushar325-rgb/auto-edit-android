@@ -747,63 +747,105 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- editor
 
+    /**
+     * Editor layout (stable preview — never collapses):
+     * <pre>
+     *  Header
+     *  LARGE PREVIEW  (explicit height floor; weight fills leftover)
+     *  Transport
+     *  Compact timeline (fixed height — zoom does NOT resize preview)
+     *  Single-row tool strip
+     *  Bounded panel host (max height; scrolls inside)
+     * </pre>
+     * Motion/Formula/Effects/Transitions open as floating {@link PanelSheet}
+     * overlays and never shrink the monitor.
+     */
     private void showEditor() {
         screen = "editor";
         base();
+        // Editor uses slightly tighter side padding so the monitor is wider.
+        root.setPadding(dp(10), root.getPaddingTop(), dp(10), root.getPaddingBottom());
         tiles.clear();
         transitionScopeClip = -1;
+        sheet = null; // rebuild sheet against the new decor after setContentView
 
         // --- header: back | title+save | undo | redo | EXPORT
         LinearLayout header = row();
         header.setGravity(Gravity.CENTER_VERTICAL);
         ImageView back = AeDesign.iconButton(this, R.drawable.ic_back, "Back", false);
         AeDesign.press(back, () -> showHome());
-        header.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        header.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
         LinearLayout title = col();
-        title.addView(label(project.name, 17, AeDesign.TEXT, Typeface.BOLD));
+        title.addView(label(project.name, 16, AeDesign.TEXT, Typeface.BOLD));
         saveStatus = label("Saved", 11, 0xff7ce0a2, Typeface.NORMAL);
         title.addView(saveStatus);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         ImageView undo = AeDesign.iconButton(this, R.drawable.ic_undo, "Undo", false);
         AeDesign.press(undo, () -> undo());
-        header.addView(undo, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        header.addView(undo, new LinearLayout.LayoutParams(dp(40), dp(40)));
         ImageView redo = AeDesign.iconButton(this, R.drawable.ic_redo, "Redo", false);
         AeDesign.press(redo, () -> redo());
-        header.addView(redo, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        header.addView(redo, new LinearLayout.LayoutParams(dp(40), dp(40)));
         Button export = AeDesign.button(this, "EXPORT", true);
         AeDesign.press(export, () -> showExportScreen());
-        header.addView(export, new LinearLayout.LayoutParams(-2, dp(44)));
+        header.addView(export, new LinearLayout.LayoutParams(-2, dp(40)));
         root.addView(header);
 
-        // --- monitor: aspect-correct centered preview (single source of truth)
+        // --- monitor: LARGE stable preview (single source of truth)
+        // ROOT CAUSE: timeline (≈280dp) + multi-row GridLayout tools + unbounded
+        // panelHost were all WRAP_CONTENT siblings of a weight=1 monitor. LinearLayout
+        // allocates wrap_content first → leftover height near-zero → PreviewView collapsed.
+        // FIX: EXPLICIT monitor height (~48% of screen) so chrome can never steal it.
+        // Bottom chrome lives in a weight=1 vertical ScrollView — if tools/panel are
+        // tall, THEY scroll; the preview stays put. Zoom only changes timeline px/sec.
         monitor = new MonitorLayout(this);
-        monitor.setPadding(dp(8), dp(8), dp(8), dp(8));
-        monitor.setBackground(AeDesign.bg(0xff03070d, dp(22), 0x22334a68, 1));
+        monitor.setPadding(dp(6), dp(6), dp(6), dp(6));
+        monitor.setBackground(AeDesign.bg(0xff03070d, dp(18), 0x22334a68, 1));
         monitor.setRatio(project.width / (float) Math.max(1, project.height));
+        int screenH = getResources().getDisplayMetrics().heightPixels;
+        int screenW = getResources().getDisplayMetrics().widthPixels;
+        // Dominant preview: ~48% of screen height, clamped to a usable band.
+        // Portrait 9:16 canvas still fits aspect-correct inside this box (letterboxed).
+        int monH = Math.max(dp(200), Math.min(dp(520), (int) (screenH * 0.48f)));
+        // Never taller than ~92% of width-derived box for landscape-ish screens.
+        monH = Math.min(monH, Math.max(dp(200), (int) (screenW * 1.15f)));
+        monitor.setMinPreviewHeightPx(monH);
+        monitor.setMinimumHeight(monH);
         preview = new PreviewView(this);
         preview.project = project;
         monitor.addView(preview, new MonitorLayout.LayoutParams(-1, -1));
-        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(-1, 0, 1);
-        mlp.setMargins(0, dp(10), 0, dp(8));
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(-1, monH);
+        mlp.setMargins(0, dp(6), 0, dp(2));
+        // Explicit height, weight 0 — siblings cannot collapse this.
         root.addView(monitor, mlp);
 
-        // --- transport: play/pause | moving time | meta
+        // --- bottom chrome (transport + timeline + tools + panel) fills leftover and scrolls
+        ScrollView chromeScroll = new ScrollView(this);
+        chromeScroll.setFillViewport(true);
+        chromeScroll.setVerticalScrollBarEnabled(false);
+        chromeScroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        LinearLayout chrome = col();
+        chromeScroll.addView(chrome, new FrameLayout.LayoutParams(-1, -2));
+        root.addView(chromeScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        // --- transport: play/pause | time | meta (compact single row)
         LinearLayout player = row();
         player.setGravity(Gravity.CENTER_VERTICAL);
         playButton = AeDesign.iconButton(this, R.drawable.ic_play, "Play", true);
         AeDesign.press(playButton, () -> togglePlay());
-        player.addView(playButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        playLabel = label("00:00 / " + fmt(project.totalDurationSec()), 16, AeDesign.TEXT, Typeface.BOLD);
-        playLabel.setPadding(dp(12), 0, 0, 0);
+        player.addView(playButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        playLabel = label("00:00 / " + fmt(project.totalDurationSec()), 14, AeDesign.TEXT, Typeface.BOLD);
+        playLabel.setPadding(dp(8), 0, 0, 0);
         player.addView(playLabel);
-        metaLabel = label(project.clips.size() + " clips • " + project.fps + " FPS • " + project.fitMode.label, 12, AeDesign.MUTED, Typeface.NORMAL);
-        metaLabel.setPadding(dp(10), 0, 0, 0);
+        metaLabel = label(project.clips.size() + " clips • " + project.fps + " FPS • " + project.fitMode.label,
+                11, AeDesign.MUTED, Typeface.NORMAL);
+        metaLabel.setPadding(dp(8), 0, 0, 0);
         player.addView(metaLabel, new LinearLayout.LayoutParams(0, -2, 1));
-        root.addView(player, new LinearLayout.LayoutParams(-1, -2));
+        chrome.addView(player, new LinearLayout.LayoutParams(-1, -2));
 
-        // --- timeline: 4 lanes (ruler / clips / waveform / overlays), one px-per-second geometry
+        // --- timeline: COMPACT fixed height (zoom only changes px-per-sec, never preview size)
         LinearLayout tbox = AeDesign.card(this);
-        tbox.setPadding(dp(8), dp(6), dp(8), dp(6));
+        tbox.setPadding(dp(6), dp(4), dp(6), dp(4));
         LinearLayout tHead = row();
         tHead.setGravity(Gravity.CENTER_VERTICAL);
         tHead.addView(iconButton(R.drawable.ic_zoom_out, () -> setTlZoom(tlZoom / 1.25f)));
@@ -813,74 +855,101 @@ public class MainActivity extends Activity {
         tHead.addView(zIn, zilp);
         ImageView sp = iconButton(R.drawable.ic_split, this::splitAtPlayhead);
         LinearLayout.LayoutParams splp = new LinearLayout.LayoutParams(-2, -2);
-        splp.leftMargin = dp(10);
+        splp.leftMargin = dp(8);
         tHead.addView(sp, splp);
-        tHead.addView(label("Split cuts the clip under the playhead into two.", 11, AeDesign.MUTED, Typeface.NORMAL),
+        tHead.addView(label("Timeline", 11, AeDesign.MUTED, Typeface.NORMAL),
                 new LinearLayout.LayoutParams(0, -2, 1));
         tbox.addView(tHead, new LinearLayout.LayoutParams(-1, -2));
         ruler = new TimelineRulerView(this);
         ruler.setProject(project);
         ruler.setZoom(tlZoom);
         timelineScroll = new HorizontalScrollView(this);
+        timelineScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout scrollContent = col();
         float pad0 = TimelineRulerView.PAD_DP * getResources().getDisplayMetrics().density;
         scrollContent.setPadding((int) pad0, 0, (int) pad0, 0);
         ruler.setLayoutParams(new LinearLayout.LayoutParams(
-                (int) (TimelineRulerView.contentWidthPx(this, project, tlZoom) - 2 * pad0), dp(34)));
+                (int) (TimelineRulerView.contentWidthPx(this, project, tlZoom) - 2 * pad0), dp(22)));
         timeline = row();
         waveTrack = new WaveformTrackView(this);
         ovlTrack = new OverlayTrackView(this);
         scrollContent.addView(ruler);
-        scrollContent.addView(timeline, new LinearLayout.LayoutParams(-1, dp(78)));
-        scrollContent.addView(waveTrack, new LinearLayout.LayoutParams(-1, dp(38)));
-        scrollContent.addView(ovlTrack, new LinearLayout.LayoutParams(-1, dp(44)));
+        // Clip lane + compact waveform/overlay — total body fixed, independent of zoom.
+        scrollContent.addView(timeline, new LinearLayout.LayoutParams(-1, dp(56)));
+        scrollContent.addView(waveTrack, new LinearLayout.LayoutParams(-1, dp(22)));
+        scrollContent.addView(ovlTrack, new LinearLayout.LayoutParams(-1, dp(22)));
         timelineScroll.addView(scrollContent);
-        tbox.addView(timelineScroll, new LinearLayout.LayoutParams(-1, dp(202)));
+        tbox.addView(timelineScroll, new LinearLayout.LayoutParams(-1, dp(122)));
         ovlTrack.setOnSelect(ix -> { selectedOverlay = ix; if (panelHost != null) overlaysPanel(); });
-        LinearLayout tracks = col();
+        // Track status as one compact line (was 3 separate rows that ate preview height).
         project.migrateLegacyAudio();
-        tracks.addView(trackLabel("Audio track",
-                project.audioTracks.isEmpty() ? "no audio"
-                        : audioTrackSummary(project.primaryAudio()),
-                !project.audioTracks.isEmpty()));
-        tracks.addView(trackLabel("Text track", project.texts.size() + " text block(s)", false));
-        tracks.addView(trackLabel("Overlay track", project.overlays.size() + " layer(s)", !project.overlays.isEmpty()));
-        tbox.addView(tracks);
-        root.addView(tbox, new LinearLayout.LayoutParams(-1, -2));
+        String trackLine = (project.audioTracks.isEmpty() ? "no audio" : audioTrackSummary(project.primaryAudio()))
+                + "  ·  " + project.texts.size() + " text  ·  " + project.overlays.size() + " overlay";
+        tbox.addView(trackLabel("Tracks", trackLine, !project.audioTracks.isEmpty() || !project.overlays.isEmpty()));
+        LinearLayout.LayoutParams tboxLp = new LinearLayout.LayoutParams(-1, -2);
+        tboxLp.topMargin = dp(4);
+        chrome.addView(tbox, tboxLp);
 
-        // --- tools: compact icon toolbar (every tool is real; no fakes)
-        GridLayout tools = new GridLayout(this);
-        tools.setColumnCount(4);
-        tileCol = 0; // reset each editor rebuild so columns stay 0..3
-        addToolTile(tools, "images", R.drawable.ic_images, "Images", () -> { openTool("images"); showImageImportMenu(); });
-        addToolTile(tools, "motion", R.drawable.ic_motion, "Motion", () -> motionPanel());
-        addToolTile(tools, "formula", R.drawable.ic_formula, "Formula", () -> formulaBatchPanel());
-        addToolTile(tools, "transition", R.drawable.ic_transition, "Transition", () -> transitionPanel());
-        addToolTile(tools, "duration", R.drawable.ic_timer, "Duration", () -> durationBatchPanel());
-        addToolTile(tools, "text", R.drawable.ic_text, "Text", () -> textStudio());
-        addToolTile(tools, "layers", R.drawable.ic_layer, "Layers", () -> overlaysPanel());
-        addToolTile(tools, "audio", R.drawable.ic_audio, "Audio", () -> audioPanel());
-        addToolTile(tools, "canvas", R.drawable.ic_canvas, "Canvas", () -> canvasPanel());
-        addToolTile(tools, "filters", R.drawable.ic_filters, "Filters", () -> filtersPanel());
-        addToolTile(tools, "effects", R.drawable.ic_effects, "Effects", () -> effectsPanel());
-        addToolTile(tools, "adjust", R.drawable.ic_adjust, "Adjust", () -> adjustPanel());
-        addToolTile(tools, "autoedit", R.drawable.ic_autoedit, "Auto Edit", () -> autoEditPanel());
+        // --- tools: SINGLE horizontal row (was 4-col GridLayout → multi-row height steal)
+        LinearLayout toolsRow = row();
+        toolsRow.setGravity(Gravity.CENTER_VERTICAL);
+        tileCol = 0;
+        addToolTileRow(toolsRow, "images", R.drawable.ic_images, "Images", () -> { openTool("images"); showImageImportMenu(); });
+        addToolTileRow(toolsRow, "motion", R.drawable.ic_motion, "Motion", () -> motionPanel());
+        addToolTileRow(toolsRow, "formula", R.drawable.ic_formula, "Formula", () -> formulaBatchPanel());
+        addToolTileRow(toolsRow, "transition", R.drawable.ic_transition, "Transition", () -> transitionPanel());
+        addToolTileRow(toolsRow, "duration", R.drawable.ic_timer, "Duration", () -> durationBatchPanel());
+        addToolTileRow(toolsRow, "text", R.drawable.ic_text, "Text", () -> textStudio());
+        addToolTileRow(toolsRow, "layers", R.drawable.ic_layer, "Layers", () -> overlaysPanel());
+        addToolTileRow(toolsRow, "audio", R.drawable.ic_audio, "Audio", () -> audioPanel());
+        addToolTileRow(toolsRow, "canvas", R.drawable.ic_canvas, "Canvas", () -> canvasPanel());
+        addToolTileRow(toolsRow, "filters", R.drawable.ic_filters, "Filters", () -> filtersPanel());
+        addToolTileRow(toolsRow, "effects", R.drawable.ic_effects, "Effects", () -> effectsPanel());
+        addToolTileRow(toolsRow, "adjust", R.drawable.ic_adjust, "Adjust", () -> adjustPanel());
+        addToolTileRow(toolsRow, "autoedit", R.drawable.ic_autoedit, "Auto Edit", () -> autoEditPanel());
         HorizontalScrollView toolsScroll = new HorizontalScrollView(this);
         toolsScroll.setHorizontalScrollBarEnabled(false);
-        toolsScroll.addView(tools, new FrameLayout.LayoutParams(-2, -2));
-        root.addView(toolsScroll, new LinearLayout.LayoutParams(-1, -2));
+        toolsScroll.setFillViewport(false);
+        toolsScroll.addView(toolsRow, new FrameLayout.LayoutParams(-2, -2));
+        LinearLayout.LayoutParams toolsLp = new LinearLayout.LayoutParams(-1, -2);
+        toolsLp.topMargin = dp(4);
+        chrome.addView(toolsScroll, toolsLp);
 
-        // --- panel host
-        ScrollView ps = new ScrollView(this);
-        ps.setFillViewport(false);
+        // --- panel host: in-tree panels (Duration/Layers/Audio/clip). Heavy tools
+        // (Motion/Formula/Effects/Transitions) use PanelSheet overlay and never land here.
+        // Host is wrap_content inside chromeScroll — grows downward, never upward into preview.
+        // No nested ScrollView (chromeScroll already scrolls the whole bottom chrome).
         panelHost = col();
-        ps.addView(panelHost);
-        root.addView(ps, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams phLp = new LinearLayout.LayoutParams(-1, -2);
+        phLp.topMargin = dp(4);
+        chrome.addView(panelHost, phLp);
 
         buildTimeline(true);
         showClipPanel();
         wirePreview();
         bindAudio();
+        root.post(this::ensureMonitorDominant);
+    }
+
+    /**
+     * Safety net after first layout: if the monitor was still squeezed (rare OEM
+     * LinearLayout quirks / inset changes), force the explicit floor height again.
+     * Timeline zoom and tool sheets never call this — only editor open / canvas change.
+     */
+    private void ensureMonitorDominant() {
+        if (monitor == null || root == null) return;
+        int floor = monitor.getMinPreviewHeightPx();
+        if (floor <= 0) return;
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) monitor.getLayoutParams();
+        if (lp == null) return;
+        int h = monitor.getHeight();
+        // Keep explicit height; never fall back to weight=1 (that was the collapse path).
+        if (lp.height != floor || lp.weight != 0f || (h > 0 && h < floor - dp(4))) {
+            lp.height = floor;
+            lp.weight = 0f;
+            monitor.setLayoutParams(lp);
+            monitor.requestLayout();
+        }
     }
 
     private void wirePreview() {
@@ -921,6 +990,20 @@ public class MainActivity extends Activity {
         lp.columnSpec = GridLayout.spec(tileCol % 4);
         lp.setMargins(dp(2), dp(2), dp(2), dp(2));
         tileCol++;
+        parent.addView(t, lp);
+        tiles.put(tag, t);
+    }
+
+    /**
+     * Single-row toolbar tile — fixed compact height so tools never wrap into
+     * multi-row GridLayout columns that steal monitor height.
+     */
+    private void addToolTileRow(LinearLayout parent, String tag, int icon, String label, Runnable onTap) {
+        ToolTile t = new ToolTile(this, icon, label, onTap);
+        // Tighter padding for the horizontal strip.
+        t.setPadding(dp(2), dp(3), dp(2), dp(3));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(64), -2);
+        lp.setMargins(dp(2), 0, dp(2), 0);
         parent.addView(t, lp);
         tiles.put(tag, t);
     }
@@ -1111,7 +1194,7 @@ public class MainActivity extends Activity {
                     }
                     return false;
                 });
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp((int) (c.durationSec * TimelineRulerView.VEL_DP)), dp(78));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp((int) (c.durationSec * TimelineRulerView.VEL_DP)), dp(56));
                 lp.leftMargin = dp((int) TimelineRulerView.GAP_DP);
                 timeline.addView(v, lp);
                 chips.add(v);
@@ -1194,10 +1277,10 @@ public class MainActivity extends Activity {
             lp.width = Math.max(dp(28), (int) (project.clips.get(idx).durationSec * pps));
             v.requestLayout();
         }
-        // keep junction icons centred on the 78dp clip lane
+        // keep junction icons centred on the compact 56dp clip lane
         for (ImageView j : junctions) {
             LinearLayout.LayoutParams jlp = (LinearLayout.LayoutParams) j.getLayoutParams();
-            jlp.topMargin = (dp(78) - dp(28)) / 2;
+            jlp.topMargin = (dp(56) - dp(28)) / 2;
         }
     }
 
@@ -2426,6 +2509,8 @@ public class MainActivity extends Activity {
         if (monitor != null) monitor.setRatio(project.width / (float) Math.max(1, project.height));
         if (metaLabel != null) metaLabel.setText(project.clips.size() + " clips • " + project.fps + " FPS • " + project.fitMode.label);
         if (preview != null) preview.invalidate();
+        // Canvas ratio change must not collapse the monitor — re-assert floor after layout.
+        if (root != null) root.post(this::ensureMonitorDominant);
     }
 
     // ---------------------------------------------------------------- playback + audio
